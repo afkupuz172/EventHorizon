@@ -1,0 +1,495 @@
+import SpriteKit
+
+final class GameScene: SKScene {
+
+    // ── Mode ───────────────────────────────────────────────────────────────────
+    private let mode: GameMode
+    private var offlineSim: OfflineSim?
+    private var lastSimTime: TimeInterval = 0
+    private let simInterval: TimeInterval = 1.0 / 20.0   // match server tick rate
+
+    // ── Camera & world layers ──────────────────────────────────────────────────
+    private let cameraNode         = SKCameraNode()
+    private let nebulaLayer        = SKNode()    // deepest, slowest
+    private let farStarLayer       = SKNode()    // distant pinpoints
+    private let midStarLayer       = SKNode()    // main starfield, varied
+    private let nearStarLayer      = SKNode()    // foreground bright stars
+    private let localObjectsLayer  = SKNode()    // planets/asteroids/suns/ships — moves with world
+
+    // ── Game entities ──────────────────────────────────────────────────────────
+    private var mySessionId:    String?
+    private var shipNodes:      [String: ShipNode]    = [:]
+    private var projectileNodes:[String: SKShapeNode] = [:]
+
+    // ── Lean animation ─────────────────────────────────────────────────────────
+    private var leanAmount: Float = 0
+
+    // ── HUD ────────────────────────────────────────────────────────────────────
+    private var joystick:        JoystickNode!
+    private var fireButton:      SKShapeNode!
+    private var joystickTouch:   UITouch?
+    private var joystickAnchor:  CGPoint = .zero
+    private var fireTouch:       UITouch?
+    private var shieldBar:       SKShapeNode!
+    private var shieldFill:      SKShapeNode!
+    private var hullBar:         SKShapeNode!
+    private var hullFill:        SKShapeNode!
+    private let hudBarWidth:     CGFloat = 140
+
+    // ── Zoom ───────────────────────────────────────────────────────────────────
+    private var isPinching = false
+    private let zoomMin: CGFloat = 0.35
+    private let zoomMax: CGFloat = 3.0
+
+    // MARK: – Init
+
+    init(size: CGSize, mode: GameMode) {
+        self.mode = mode
+        super.init(size: size)
+    }
+    required init?(coder aDecoder: NSCoder) { fatalError() }
+
+    // MARK: – Lifecycle
+
+    override func didMove(to view: SKView) {
+        backgroundColor = .black
+        setupCamera()
+        setupStarField()
+        setupBoundary()
+        setupHUD()
+        setupGestures(in: view)
+
+        switch mode {
+        case .singlePlayer:
+            offlineSim   = OfflineSim()
+            mySessionId  = offlineSim?.sessionId
+        case .multiplayer:
+            NetworkManager.shared.delegate = self
+            NetworkManager.shared.connect()
+        }
+    }
+
+    override func willMove(from view: SKView) {
+        view.gestureRecognizers?.removeAll()
+        if mode == .multiplayer {
+            NetworkManager.shared.disconnect()
+        }
+    }
+
+    // MARK: – Gestures
+
+    private func setupGestures(in view: SKView) {
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinch.cancelsTouchesInView = false
+        view.addGestureRecognizer(pinch)
+    }
+
+    @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
+        switch g.state {
+        case .began:
+            isPinching = true
+        case .changed:
+            // Each .changed event reports the cumulative scale; reset to 1 so
+            // every event is a delta we can apply incrementally.
+            let factor = g.scale
+            let proposed = cameraNode.xScale / factor
+            let clamped  = min(zoomMax, max(zoomMin, proposed))
+            cameraNode.setScale(clamped)
+            g.scale = 1.0
+        case .ended, .cancelled, .failed:
+            isPinching = false
+        default:
+            break
+        }
+    }
+
+    // MARK: – Setup
+
+    private func setupCamera() {
+        addChild(cameraNode)
+        camera = cameraNode
+    }
+
+    private func setupStarField() {
+        // zPosition stack — explicit so ships and projectiles render in front
+        // of every background layer regardless of insertion order.
+        nebulaLayer.zPosition       = -100
+        farStarLayer.zPosition      = -90
+        midStarLayer.zPosition      = -80
+        nearStarLayer.zPosition     = -70
+        localObjectsLayer.zPosition = -20
+
+        addChild(nebulaLayer)
+        addChild(farStarLayer)
+        addChild(midStarLayer)
+        addChild(nearStarLayer)
+        addChild(localObjectsLayer)
+
+        // Far field — dense, dim, no flares. Sells "depth."
+        scatter(farStarLayer, count: 380, spread: 16000,
+                scaleRange: 0.20...0.55,
+                alphaRange: 0.30...0.70,
+                variants:   [.dimWhite, .dimWhite, .dimWhite, .mediumWhite])
+
+        // Mid field — main starfield, mix of variants, a few colored giants.
+        scatter(midStarLayer, count: 220, spread: 13000,
+                scaleRange: 0.35...0.80,
+                alphaRange: 0.50...0.90,
+                variants:   [.dimWhite, .mediumWhite, .mediumWhite, .mediumWhite,
+                             .yellowSun, .redGiant])
+
+        // Near field — featured bright stars with diffraction spikes. Few of
+        // these — they're hero lights, not background.
+        scatter(nearStarLayer, count: 55, spread: 10000,
+                scaleRange: 0.55...1.10,
+                alphaRange: 0.75...1.0,
+                variants:   [.mediumWhite, .brightWhite, .blueGiant, .yellowSun, .redGiant])
+
+        scatterNebulae()
+    }
+
+    private func scatter(_ layer: SKNode, count: Int, spread: CGFloat,
+                         scaleRange: ClosedRange<CGFloat>,
+                         alphaRange: ClosedRange<CGFloat>,
+                         variants:   [StarVariant]) {
+        let atlas = StarAtlas.shared
+        for _ in 0..<count {
+            guard let variant = variants.randomElement(),
+                  let texture = atlas.textures[variant] else { continue }
+            let star            = SKSpriteNode(texture: texture)
+            star.setScale(CGFloat.random(in: scaleRange))
+            star.alpha          = CGFloat.random(in: alphaRange)
+            star.position       = CGPoint(x: CGFloat.random(in: -spread...spread),
+                                          y: CGFloat.random(in: -spread...spread))
+            // Additive blending makes overlapping stars sum to brighter, which
+            // is how a real-camera starfield reads.
+            star.blendMode      = .add
+            layer.addChild(star)
+
+            // Twinkle a fraction of stars so the field doesn't read as static.
+            if Int.random(in: 0...8) == 0 {
+                let baseAlpha = star.alpha
+                let dim    = SKAction.fadeAlpha(to: baseAlpha * 0.5,
+                                                duration: Double.random(in: 1.4...3.2))
+                let bright = SKAction.fadeAlpha(to: baseAlpha,
+                                                duration: Double.random(in: 1.4...3.2))
+                dim.timingMode    = .easeInEaseOut
+                bright.timingMode = .easeInEaseOut
+                star.run(.repeatForever(.sequence([dim, bright])))
+            }
+        }
+    }
+
+    private func scatterNebulae() {
+        let atlas = NebulaAtlas.shared
+        for _ in 0..<14 {
+            let tint = NebulaTint.allCases.randomElement()!
+            guard let texture = atlas.textures[tint]?.randomElement() else { continue }
+
+            let cloud = SKSpriteNode(texture: texture)
+            // Source texture is 512×512; rescale to world units. Vary size so
+            // clouds aren't uniform.
+            let visualRadius = CGFloat.random(in: 1800...3600)
+            cloud.size      = CGSize(width: visualRadius * 2, height: visualRadius * 2)
+            cloud.alpha     = CGFloat.random(in: 0.55...0.85)
+            cloud.blendMode = .add
+            // Random rotation so the same texture doesn't read as repeats.
+            cloud.zRotation = CGFloat.random(in: 0...(2 * .pi))
+            cloud.position  = CGPoint(x: CGFloat.random(in: -12000...12000),
+                                      y: CGFloat.random(in: -12000...12000))
+            nebulaLayer.addChild(cloud)
+        }
+    }
+
+    private func setupBoundary() {
+        let ring         = SKShapeNode(circleOfRadius: 5000)
+        ring.strokeColor = UIColor(white: 1, alpha: 0.07)
+        ring.fillColor   = .clear
+        ring.lineWidth   = 3
+        addChild(ring)
+    }
+
+    private func setupHUD() {
+        let hw = size.width  / 2
+        let hh = size.height / 2
+
+        joystick          = JoystickNode()
+        joystick.position = CGPoint(x: -hw + 110, y: -hh + 110)
+        joystick.alpha    = 0.75
+        cameraNode.addChild(joystick)
+
+        fireButton             = SKShapeNode(circleOfRadius: 38)
+        fireButton.fillColor   = UIColor(red: 1, green: 0.2, blue: 0.15, alpha: 0.38)
+        fireButton.strokeColor = UIColor(red: 1, green: 0.45, blue: 0.4,  alpha: 0.70)
+        fireButton.lineWidth   = 1.5
+        fireButton.position    = CGPoint(x: hw - 90, y: -hh + 90)
+
+        let fireLabel              = SKLabelNode(text: "FIRE")
+        fireLabel.fontName         = "AvenirNext-Bold"
+        fireLabel.fontSize         = 11
+        fireLabel.fontColor        = .white
+        fireLabel.verticalAlignmentMode = .center
+        fireButton.addChild(fireLabel)
+        cameraNode.addChild(fireButton)
+
+        buildStatusReadout(topRight: CGPoint(x: hw - 18, y: hh - 24))
+    }
+
+    private func buildStatusReadout(topRight: CGPoint) {
+        // Container so positions are local — top-right alignment
+        let panel       = SKNode()
+        panel.position  = topRight
+        cameraNode.addChild(panel)
+
+        func key(_ text: String, y: CGFloat) -> SKLabelNode {
+            let l                       = SKLabelNode(text: text)
+            l.fontName                  = "AvenirNext-Medium"
+            l.fontSize                  = 10
+            l.fontColor                 = UIColor(white: 0.7, alpha: 1)
+            l.horizontalAlignmentMode   = .right
+            l.verticalAlignmentMode     = .center
+            l.position                  = CGPoint(x: -hudBarWidth - 8, y: y)
+            return l
+        }
+
+        func barTrack(y: CGFloat) -> SKShapeNode {
+            let track         = SKShapeNode(rect: CGRect(x: -hudBarWidth, y: y - 4,
+                                                         width: hudBarWidth, height: 8),
+                                            cornerRadius: 2)
+            track.fillColor   = UIColor(white: 1, alpha: 0.08)
+            track.strokeColor = UIColor(white: 1, alpha: 0.25)
+            track.lineWidth   = 1
+            return track
+        }
+
+        // Shields row (y = 0)
+        panel.addChild(key("SHIELDS", y: 0))
+        let shieldTrack = barTrack(y: 0)
+        panel.addChild(shieldTrack)
+
+        let shieldFillContainer  = SKNode()
+        shieldFillContainer.position = CGPoint(x: -hudBarWidth, y: 0)
+        let shieldFillRect        = SKShapeNode(rect: CGRect(x: 0, y: -3,
+                                                             width: hudBarWidth, height: 6),
+                                                cornerRadius: 1.5)
+        shieldFillRect.fillColor   = UIColor(red: 0.30, green: 0.65, blue: 1.0, alpha: 0.95)
+        shieldFillRect.strokeColor = .clear
+        shieldFillContainer.addChild(shieldFillRect)
+        panel.addChild(shieldFillContainer)
+        shieldFill = shieldFillRect
+        shieldBar  = shieldTrack
+
+        // Hull row (y = -18)
+        panel.addChild(key("HULL", y: -18))
+        let hullTrack = barTrack(y: -18)
+        panel.addChild(hullTrack)
+
+        let hullFillContainer = SKNode()
+        hullFillContainer.position = CGPoint(x: -hudBarWidth, y: -18)
+        let hullFillRect      = SKShapeNode(rect: CGRect(x: 0, y: -3,
+                                                         width: hudBarWidth, height: 6),
+                                            cornerRadius: 1.5)
+        hullFillRect.fillColor   = UIColor(red: 1.0, green: 0.30, blue: 0.30, alpha: 0.95)
+        hullFillRect.strokeColor = .clear
+        hullFillContainer.addChild(hullFillRect)
+        panel.addChild(hullFillContainer)
+        hullFill = hullFillRect
+        hullBar  = hullTrack
+    }
+
+    private func setStatus(shieldsPct: CGFloat, hullPct: CGFloat) {
+        shieldFill?.xScale = max(0.001, min(1, shieldsPct))
+        hullFill?.xScale   = max(0.001, min(1, hullPct))
+    }
+
+    // MARK: – Game loop
+
+    override func update(_ currentTime: TimeInterval) {
+        // Lean smoothing
+        let i = mode == .multiplayer ? NetworkManager.shared.input : localInput
+        let target: Float = i.turnLeft ? -1 : (i.turnRight ? 1 : 0)
+        leanAmount += (target - leanAmount) * 0.12
+        if let sid = mySessionId { shipNodes[sid]?.applyLean(leanAmount) }
+
+        // Offline sim drives the same delegate path as the network
+        if mode == .singlePlayer, let sim = offlineSim {
+            if currentTime - lastSimTime >= simInterval {
+                lastSimTime = currentTime
+                let snap = sim.step(input: localInput)
+                applySnapshot(snap, mySessionId: sim.sessionId)
+            }
+        }
+
+        // Parallax — three star tiers + a deep nebula tier. The factors are
+        // the FRACTION of the camera's motion that the layer keeps; smaller
+        // numbers = layer "follows" the camera more (appears farther away).
+        // Subtle separation is fine — even 0.10 between tiers reads as depth.
+        let cx = cameraNode.position.x
+        let cy = cameraNode.position.y
+        nebulaLayer.position   = CGPoint(x: cx * 0.02, y: cy * 0.02)
+        farStarLayer.position  = CGPoint(x: cx * 0.06, y: cy * 0.06)
+        midStarLayer.position  = CGPoint(x: cx * 0.16, y: cy * 0.16)
+        nearStarLayer.position = CGPoint(x: cx * 0.32, y: cy * 0.32)
+    }
+
+    // MARK: – Input routing
+
+    /// Offline mode reads from the same InputState struct as online for code reuse.
+    private var localInput = InputState()
+
+    // MARK: – Touch
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard !isPinching else { return }
+        for touch in touches {
+            let p = touch.location(in: cameraNode)
+            if p.x < 0, joystickTouch == nil {
+                joystickTouch  = touch
+                joystickAnchor = p
+                joystick.position = p
+                joystick.reset()
+            } else if p.x >= 0, fireTouch == nil {
+                fireTouch = touch
+                setInput { $0.firing = true }
+                fireButton.fillColor = UIColor(red: 1, green: 0.45, blue: 0.2, alpha: 0.65)
+            }
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches where touch === joystickTouch {
+            let p      = touch.location(in: cameraNode)
+            let offset = CGPoint(x: p.x - joystickAnchor.x, y: p.y - joystickAnchor.y)
+            joystick.setThumb(offset: offset)
+
+            let dead: CGFloat = 12
+            setInput {
+                $0.thrust    = offset.y >  dead
+                $0.turnLeft  = offset.x < -dead
+                $0.turnRight = offset.x >  dead
+            }
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        endTouches(touches)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        endTouches(touches)
+    }
+
+    private func endTouches(_ touches: Set<UITouch>) {
+        for touch in touches {
+            if touch === joystickTouch {
+                joystickTouch = nil
+                joystick.reset()
+                setInput {
+                    $0.thrust    = false
+                    $0.turnLeft  = false
+                    $0.turnRight = false
+                }
+            }
+            if touch === fireTouch {
+                fireTouch = nil
+                setInput { $0.firing = false }
+                fireButton.fillColor = UIColor(red: 1, green: 0.2, blue: 0.15, alpha: 0.38)
+            }
+        }
+    }
+
+    private func setInput(_ mutate: (inout InputState) -> Void) {
+        switch mode {
+        case .multiplayer:  mutate(&NetworkManager.shared.input)
+        case .singlePlayer: mutate(&localInput)
+        }
+    }
+
+    // MARK: – Snapshot application (shared between online and offline)
+
+    private func applySnapshot(_ snapshot: GameSnapshot, mySessionId: String) {
+        // Ships
+        let activeShips = Set(snapshot.ships.keys)
+
+        for (id, data) in snapshot.ships {
+            if let node = shipNodes[id] {
+                node.update(from: data)
+            } else {
+                let node = ShipNode(isLocalPlayer: id == mySessionId)
+                addChild(node)
+                shipNodes[id] = node
+                node.update(from: data)
+            }
+        }
+        for id in shipNodes.keys where !activeShips.contains(id) {
+            shipNodes.removeValue(forKey: id)?.removeFromParent()
+        }
+
+        // Camera follows local ship
+        if let s = snapshot.ships[mySessionId] {
+            cameraNode.position = CGPoint(x: CGFloat(s.x), y: CGFloat(s.y))
+            setStatus(shieldsPct: CGFloat(s.shields) / 100,
+                      hullPct:    CGFloat(s.hull)    / 100)
+        }
+
+        // Projectiles
+        let activeProjs = Set(snapshot.projectiles.keys)
+        for (id, data) in snapshot.projectiles {
+            if let node = projectileNodes[id] {
+                node.position = CGPoint(x: CGFloat(data.x), y: CGFloat(data.y))
+            } else {
+                let node      = makeProjectile(isOwn: data.ownerId == mySessionId)
+                node.position = CGPoint(x: CGFloat(data.x), y: CGFloat(data.y))
+                addChild(node)
+                projectileNodes[id] = node
+            }
+        }
+        for id in projectileNodes.keys where !activeProjs.contains(id) {
+            projectileNodes.removeValue(forKey: id)?.removeFromParent()
+        }
+    }
+
+    // MARK: – Helpers
+
+    private func makeProjectile(isOwn: Bool) -> SKShapeNode {
+        let node         = SKShapeNode(rectOf: CGSize(width: 5, height: 12), cornerRadius: 2)
+        node.fillColor   = isOwn ? .yellow : UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
+        node.strokeColor = .clear
+        node.glowWidth   = 8
+        return node
+    }
+}
+
+// MARK: – NetworkManagerDelegate
+
+extension GameScene: NetworkManagerDelegate {
+
+    func didConnect(mySessionId: String) {
+        self.mySessionId = mySessionId
+    }
+
+    func didReceiveSnapshot(_ snapshot: GameSnapshot, mySessionId: String) {
+        applySnapshot(snapshot, mySessionId: mySessionId)
+    }
+
+    func didShipDestroyed(sessionId: String, killedBy: String) {
+        guard let node = shipNodes[sessionId] else { return }
+        let flash = SKAction.sequence([
+            .fadeAlpha(to: 1.0, duration: 0),
+            .fadeAlpha(to: 0.0, duration: 0.15),
+        ])
+        node.run(flash)
+    }
+
+    func didShipRespawned(sessionId: String) {
+        shipNodes[sessionId]?.alpha = 1
+    }
+
+    func didPlayerLeft(sessionId: String) {
+        shipNodes.removeValue(forKey: sessionId)?.removeFromParent()
+    }
+
+    func didDisconnect() {
+        print("Server disconnected")
+    }
+}
