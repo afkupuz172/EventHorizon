@@ -1,0 +1,28 @@
+{
+  "name": "Home System",
+  "lightingEnvironment": "HDR_multi_nebulae",
+  "suns": [
+    {
+      "x":      0,
+      "y":      0,
+      "radius": 420
+    }
+  ],
+  "planets": [
+    {
+      "type":          "continental",
+      "centerX":       0,
+      "centerY":       0,
+      "orbitDistance": 2600,
+      "radius":        260
+    }
+  ],
+  "asteroids": {
+    "count":         10,
+    "spreadRadius":  4400,
+    "minRadius":     35,
+    "maxRadius":     85,
+    "minSpinPeriod": 8.0,
+    "maxSpinPeriod": 28.0
+  }
+}

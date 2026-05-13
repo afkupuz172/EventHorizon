@@ -41,6 +41,15 @@ final class GameScene: SKScene {
     private let zoomMin: CGFloat = 0.35
     private let zoomMax: CGFloat = 3.0
 
+    // ── Solar system context ───────────────────────────────────────────────────
+    private var solarSystem:        SolarSystem?
+    private var primarySunPosition: CGPoint = .zero
+
+    // ── Selection / tooltip / mini-map ─────────────────────────────────────────
+    private var miniMap:        MiniMap!
+    private var infoTooltip:    InfoTooltip!
+    private weak var selectedBody: CelestialBodyNode?
+
     // MARK: – Init
 
     init(size: CGSize, mode: GameMode) {
@@ -56,6 +65,7 @@ final class GameScene: SKScene {
         setupCamera()
         setupStarField()
         setupBoundary()
+        setupSolarSystem()
         setupHUD()
         setupGestures(in: view)
 
@@ -282,6 +292,21 @@ final class GameScene: SKScene {
         addChild(ring)
     }
 
+    private func setupSolarSystem() {
+        // The system config (which planets, suns, asteroids) lives in JSON.
+        // Eventually we'd pick a different file per system — for now, the
+        // game always loads "home_system".
+        guard let system = SolarSystem(name: "home_system") else { return }
+        system.install(into: localObjectsLayer)
+        primarySunPosition = system.primarySunPosition ?? .zero
+        solarSystem        = system
+
+        // Seed the mini-map with the static body positions. Dynamic ship
+        // positions are pushed in every frame.
+        miniMap?.configure(suns:    system.sunPositions,
+                           planets: system.planetPositions)
+    }
+
     private func setupHUD() {
         let hw = size.width  / 2
         let hh = size.height / 2
@@ -306,6 +331,22 @@ final class GameScene: SKScene {
         cameraNode.addChild(fireButton)
 
         buildStatusReadout(topRight: CGPoint(x: hw - 18, y: hh - 24))
+
+        // Mini-map under the health bars, top-right corner.
+        miniMap = MiniMap(radius: 62)
+        miniMap.position = CGPoint(x: hw - 18 - miniMap.radius,
+                                   y: hh - 24 - 32 - miniMap.radius)
+        cameraNode.addChild(miniMap)
+        if let system = solarSystem {
+            miniMap.configure(suns:    system.sunPositions,
+                              planets: system.planetPositions)
+        }
+
+        // Info tooltip in the top-left corner. Hidden until something is
+        // selected.
+        infoTooltip          = InfoTooltip()
+        infoTooltip.position = CGPoint(x: -hw + 16, y: hh - 16)
+        cameraNode.addChild(infoTooltip)
     }
 
     private func buildStatusReadout(topRight: CGPoint) {
@@ -406,6 +447,41 @@ final class GameScene: SKScene {
         nearStarLayer.position = CGPoint(x: cx * 0.70, y: cy * 0.70)
         midStarLayer.position  = CGPoint(x: cx * 0.80, y: cy * 0.80)
         farStarLayer.position  = CGPoint(x: cx * 0.92, y: cy * 0.92)
+
+        refreshHUD()
+    }
+
+    // MARK: – HUD updates
+
+    private func refreshHUD() {
+        // Mini-map relative to the local player ship.
+        guard let sid       = mySessionId,
+              let playerNode = shipNodes[sid],
+              let system    = solarSystem
+        else { return }
+
+        let playerPos     = playerNode.position
+        let playerHeading = playerNode.heading
+
+        // Build the list of OTHER ships (exclude the local player — they sit
+        // at the radar's centre by definition).
+        let otherShips: [(id: String, position: CGPoint)] =
+            shipNodes
+                .filter { $0.key != sid }
+                .map { ($0.key, $0.value.position) }
+
+        miniMap.update(playerPosition: playerPos,
+                       playerHeading:  playerHeading,
+                       suns:           system.sunPositions,
+                       planets:        system.planetPositions,
+                       ships:          otherShips)
+
+        // Keep the tooltip's distance value in sync as the player flies.
+        if let body = selectedBody {
+            let dx = body.position.x - playerPos.x
+            let dy = body.position.y - playerPos.y
+            infoTooltip.updateDistance(hypot(dx, dy), for: body)
+        }
     }
 
     // MARK: – Input routing
@@ -418,6 +494,15 @@ final class GameScene: SKScene {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard !isPinching else { return }
         for touch in touches {
+            // Tap-to-select takes priority. If the touch lands on a selectable
+            // body, consume the touch — don't route it to the joystick or fire
+            // button.
+            let scenePoint = touch.location(in: self)
+            if let body = selectableBody(at: scenePoint) {
+                selectBody(body)
+                continue
+            }
+
             let p = touch.location(in: cameraNode)
             if p.x < 0, joystickTouch == nil {
                 joystickTouch  = touch
@@ -430,6 +515,51 @@ final class GameScene: SKScene {
                 fireButton.fillColor = UIColor(red: 1, green: 0.45, blue: 0.2, alpha: 0.65)
             }
         }
+    }
+
+    // MARK: – Selection
+
+    /// Distance-based hit test against every selectable celestial body. Touch
+    /// is in scene coordinates, which match world coordinates because the
+    /// camera is the scene's `camera`. The local-objects layer is unparented
+    /// from any parallax offset, so a body's `position` IS its world position.
+    private func selectableBody(at scenePoint: CGPoint) -> CelestialBodyNode? {
+        guard let bodies = solarSystem?.bodies else { return nil }
+        var best: (body: CelestialBodyNode, dist: CGFloat)?
+        for body in bodies where body.isSelectable {
+            let dx = scenePoint.x - body.position.x
+            let dy = scenePoint.y - body.position.y
+            let dist = hypot(dx, dy)
+            // Generous hit radius so tiny asteroids are still tappable.
+            let hitRadius = max(body.bodyRadius, 28)
+            guard dist <= hitRadius else { continue }
+            if best == nil || dist < best!.dist {
+                best = (body, dist)
+            }
+        }
+        return best?.body
+    }
+
+    private func selectBody(_ body: CelestialBodyNode) {
+        // Tapping the same body again deselects, otherwise switch selection.
+        if selectedBody === body {
+            selectedBody?.setSelected(false)
+            selectedBody = nil
+            infoTooltip.hide()
+            return
+        }
+        selectedBody?.setSelected(false)
+        body.setSelected(true)
+        selectedBody = body
+
+        let distance: CGFloat
+        if let sid = mySessionId, let player = shipNodes[sid] {
+            distance = hypot(body.position.x - player.position.x,
+                             body.position.y - player.position.y)
+        } else {
+            distance = 0
+        }
+        infoTooltip.show(body: body, distance: distance)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -492,12 +622,12 @@ final class GameScene: SKScene {
 
         for (id, data) in snapshot.ships {
             if let node = shipNodes[id] {
-                node.update(from: data)
+                node.update(from: data, sunPosition: primarySunPosition)
             } else {
                 let node = ShipNode(isLocalPlayer: id == mySessionId)
                 addChild(node)
                 shipNodes[id] = node
-                node.update(from: data)
+                node.update(from: data, sunPosition: primarySunPosition)
             }
         }
         for id in shipNodes.keys where !activeShips.contains(id) {

@@ -17,6 +17,11 @@ final class ShipNode: SKNode {
     /// Distance from ship center to where the thrust emitter mounts.
     private var thrustDistance: CGFloat = 40
 
+    /// World-space heading of the ship in radians. 0 = +X (right), π/2 = +Y
+    /// (up). Updated from each snapshot; the HUD uses this for the radar
+    /// wedge.
+    private(set) var heading: CGFloat = 0
+
     init(isLocalPlayer: Bool, metadata: ShipMetadata = .spaceship1) {
         self.isLocalPlayer = isLocalPlayer
         self.metadata      = metadata
@@ -239,8 +244,9 @@ final class ShipNode: SKNode {
 
     // MARK: – Update
 
-    func update(from ship: ShipSnapshot) {
+    func update(from ship: ShipSnapshot, sunPosition: CGPoint = .zero) {
         position = CGPoint(x: CGFloat(ship.x), y: CGFloat(ship.y))
+        heading  = CGFloat(ship.angle)
 
         // Heading: rotate the 3D model around scene +Z so the nose (which sits
         // at scene +Y after orientation) points along the world heading.
@@ -257,26 +263,31 @@ final class ShipNode: SKNode {
         thrustEmitter?.emissionAngle    = a + .pi
         thrustEmitter?.particleBirthRate = ship.thrusting ? 90 : 0
 
-        aimCenterLight(shipX: ship.x, shipY: ship.y)
+        aimCenterLight(shipX: ship.x, shipY: ship.y,
+                       sunX:  Float(sunPosition.x),
+                       sunY:  Float(sunPosition.y))
 
         alpha    = ship.dead ? 0 : 1
         isHidden = false
     }
 
-    /// Aim the map-center directional light so it points FROM world origin
-    /// TOWARD the ship. The face of the ship nearest the map center is lit.
-    private func aimCenterLight(shipX: Float, shipY: Float) {
+    /// Aim the directional light inside the ship's SCN scene so it points
+    /// FROM the sun's world position TOWARD the ship. The face of the ship
+    /// nearest the sun is lit; self-shadows fall on the opposite side.
+    private func aimCenterLight(shipX: Float, shipY: Float,
+                                sunX: Float,  sunY: Float) {
         guard let light = centerLight else { return }
-        // Place the light "above" the map origin relative to the ship. Distance
-        // doesn't matter for a directional light — only the orientation does.
-        let dx = -shipX
-        let dy = -shipY
+        let dx  = sunX - shipX
+        let dy  = sunY - shipY
         let mag = sqrt(dx * dx + dy * dy)
         let height: Float = 1.5
         if mag > 0.001 {
+            // Directional light — only orientation matters. Position is just
+            // any point in the desired direction.
             let scale: Float = 3.0 / mag
             light.position = SCNVector3(dx * scale, dy * scale, height)
         } else {
+            // Ship is sitting on top of the sun. Light it from straight above.
             light.position = SCNVector3(0, 0, height)
         }
         light.look(at: SCNVector3(0, 0, 0),
