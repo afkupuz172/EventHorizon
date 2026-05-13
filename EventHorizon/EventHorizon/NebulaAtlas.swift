@@ -22,7 +22,10 @@ struct NebulaAtlas {
     private init() {
         var map: [NebulaTint: [SKTexture]] = [:]
         for tint in NebulaTint.allCases {
-            map[tint] = (0..<3).map { _ in Self.makeTexture(tint: tint) }
+            // 8 unique textures per tint × 4 tints = 32 unique puff textures.
+            // With many distinct sources, the eye doesn't catch repetition in
+            // a cloud composed of 20+ overlapping puffs.
+            map[tint] = (0..<8).map { _ in Self.makeTexture(tint: tint) }
         }
         textures = map
     }
@@ -38,8 +41,11 @@ struct NebulaAtlas {
 
     // MARK: – Rendering
 
+    /// One puff is a small irregular wisp. A "cloud" is many puffs scattered
+    /// at random world positions — that's how we avoid the cloud reading as
+    /// a single uniform disc.
     private static func makeTexture(tint: NebulaTint) -> SKTexture {
-        let canvasSize: CGFloat = 512
+        let canvasSize: CGFloat = 384
         let format = UIGraphicsImageRendererFormat.default()
         format.scale  = 2
         format.opaque = false
@@ -50,9 +56,6 @@ struct NebulaAtlas {
         )
 
         let color = color(for: tint)
-        let center = CGPoint(x: canvasSize / 2, y: canvasSize / 2)
-        // Keep all blobs inside this radius so the texture has a clear edge.
-        let maxR: CGFloat = canvasSize * 0.42
         let space = CGColorSpaceCreateDeviceRGB()
 
         let image = renderer.image { ctx in
@@ -61,12 +64,12 @@ struct NebulaAtlas {
             func blob(cx: CGFloat, cy: CGFloat, r: CGFloat, alpha: CGFloat) {
                 let stops: [CGColor] = [
                     color.withAlphaComponent(alpha).cgColor,
-                    color.withAlphaComponent(alpha * 0.45).cgColor,
+                    color.withAlphaComponent(alpha * 0.4).cgColor,
                     color.withAlphaComponent(0).cgColor,
                 ]
                 guard let g = CGGradient(colorsSpace: space,
                                          colors:      stops as CFArray,
-                                         locations:   [0, 0.5, 1])
+                                         locations:   [0, 0.45, 1])
                 else { return }
                 cg.drawRadialGradient(g,
                                       startCenter: CGPoint(x: cx, y: cy), startRadius: 0,
@@ -74,39 +77,31 @@ struct NebulaAtlas {
                                       options: [])
             }
 
-            // Tier 1 — large faint bases. Cluster near the center to give the
-            // cloud overall body.
-            for _ in 0..<8 {
-                let angle = CGFloat.random(in: 0...(2 * .pi))
-                let dist  = CGFloat.random(in: 0...(maxR * 0.30))
-                let r     = CGFloat.random(in: maxR * 0.35 ... maxR * 0.65)
-                blob(cx: center.x + cos(angle) * dist,
-                     cy: center.y + sin(angle) * dist,
-                     r:  r,
-                     alpha: CGFloat.random(in: 0.04...0.07))
+            // Distribute blobs across the canvas. Keep them well INSIDE so
+            // the gradient falloff has room to fade to zero before the texture
+            // edge — partial blobs at the canvas boundary read as hard lines
+            // when the sprite is rotated and composited with neighbours.
+            // Slight count variation keeps each texture distinct without
+            // dramatically changing the overall feel.
+            let bigBlobs = Int.random(in: 5...8)
+            for _ in 0..<bigBlobs {
+                blob(cx:    CGFloat.random(in: canvasSize * 0.20 ... canvasSize * 0.80),
+                     cy:    CGFloat.random(in: canvasSize * 0.20 ... canvasSize * 0.80),
+                     r:     CGFloat.random(in: canvasSize * 0.20 ... canvasSize * 0.36),
+                     alpha: CGFloat.random(in: 0.05...0.09))
             }
-
-            // Tier 2 — medium clumps spread further out. Create the density
-            // variation that makes the cloud look "puffy".
-            for _ in 0..<28 {
-                let angle = CGFloat.random(in: 0...(2 * .pi))
-                let dist  = CGFloat.random(in: 0...(maxR * 0.65))
-                let r     = CGFloat.random(in: maxR * 0.12 ... maxR * 0.28)
-                blob(cx: center.x + cos(angle) * dist,
-                     cy: center.y + sin(angle) * dist,
-                     r:  r,
-                     alpha: CGFloat.random(in: 0.08...0.13))
+            let mediumBlobs = Int.random(in: 20...28)
+            for _ in 0..<mediumBlobs {
+                blob(cx:    CGFloat.random(in: canvasSize * 0.12 ... canvasSize * 0.88),
+                     cy:    CGFloat.random(in: canvasSize * 0.12 ... canvasSize * 0.88),
+                     r:     CGFloat.random(in: canvasSize * 0.08 ... canvasSize * 0.18),
+                     alpha: CGFloat.random(in: 0.09...0.16))
             }
-
-            // Tier 3 — small bright wisps. These give the cloud crisp detail
-            // up close. Distributed across the full disc including the edge.
-            for _ in 0..<40 {
-                let angle = CGFloat.random(in: 0...(2 * .pi))
-                let dist  = CGFloat.random(in: 0...(maxR * 0.85))
-                let r     = CGFloat.random(in: maxR * 0.04 ... maxR * 0.10)
-                blob(cx: center.x + cos(angle) * dist,
-                     cy: center.y + sin(angle) * dist,
-                     r:  r,
+            let smallBlobs = Int.random(in: 30...45)
+            for _ in 0..<smallBlobs {
+                blob(cx:    CGFloat.random(in: canvasSize * 0.10 ... canvasSize * 0.90),
+                     cy:    CGFloat.random(in: canvasSize * 0.10 ... canvasSize * 0.90),
+                     r:     CGFloat.random(in: canvasSize * 0.03 ... canvasSize * 0.07),
                      alpha: CGFloat.random(in: 0.12...0.20))
             }
         }

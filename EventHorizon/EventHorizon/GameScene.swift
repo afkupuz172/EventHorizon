@@ -111,13 +111,14 @@ final class GameScene: SKScene {
     }
 
     private func setupStarField() {
-        // zPosition stack — explicit so ships and projectiles render in front
-        // of every background layer regardless of insertion order.
-        nebulaLayer.zPosition       = -100
-        farStarLayer.zPosition      = -90
-        midStarLayer.zPosition      = -80
-        nearStarLayer.zPosition     = -70
-        localObjectsLayer.zPosition = -20
+        // Z-stack from back (deepest) to front (closest). Stars are behind
+        // everything, then nebula clouds (treated as foreground gas you fly
+        // through), then localObjects (planets/asteroids/ships).
+        farStarLayer.zPosition      = -100   // deepest
+        midStarLayer.zPosition      =  -90
+        nearStarLayer.zPosition     =  -80
+        nebulaLayer.zPosition       =  -30   // clouds in front of stars
+        localObjectsLayer.zPosition =  -20
 
         addChild(nebulaLayer)
         addChild(farStarLayer)
@@ -125,27 +126,83 @@ final class GameScene: SKScene {
         addChild(nearStarLayer)
         addChild(localObjectsLayer)
 
-        // Far field — dense, dim, no flares. Sells "depth."
-        scatter(farStarLayer, count: 380, spread: 16000,
-                scaleRange: 0.20...0.55,
-                alphaRange: 0.30...0.70,
-                variants:   [.dimWhite, .dimWhite, .dimWhite, .mediumWhite])
+        // Far field — scattered pinpricks. With parallax factor 0.92 this
+        // layer follows the camera at 92%, so the visible local-coords window
+        // is small (≈ ±1800) regardless of where the player is. A tight spread
+        // gives high visible density with few total nodes.
+        scatter(farStarLayer, count: 2000, spread: 1000,
+                scaleRange: 0.05...0.27,
+                alphaRange: 0.42...0.55,
+                variants:   [.pinprick, .mediumWhite, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .yellowSun, .pinprick,
+                             .dimWhite, .pinprick, .pinprick, .redGiant])
 
-        // Mid field — main starfield, mix of variants, a few colored giants.
-        scatter(midStarLayer, count: 220, spread: 13000,
-                scaleRange: 0.35...0.80,
-                alphaRange: 0.50...0.90,
-                variants:   [.dimWhite, .mediumWhite, .mediumWhite, .mediumWhite,
-                             .yellowSun, .redGiant])
+        // Mid field — sprite-node pinpricks plus a sprinkle of bloom stars
+        // and the occasional warm tinted giant for color variety.
+        scatter(midStarLayer, count: 2000, spread: 3000,
+                scaleRange: 0.24...0.42,
+                alphaRange: 0.42...0.95,
+                variants:   [.pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .dimWhite, .mediumWhite, .yellowSun, .redGiant,
+                             .dimWhite, .mediumWhite, .yellowSun, .redGiant, .brightWhite])
 
-        // Near field — featured bright stars with diffraction spikes. Few of
-        // these — they're hero lights, not background.
-        scatter(nearStarLayer, count: 55, spread: 10000,
-                scaleRange: 0.55...1.10,
-                alphaRange: 0.75...1.0,
-                variants:   [.mediumWhite, .brightWhite, .blueGiant, .yellowSun, .redGiant])
+        // Near field — hero stars with bloom and diffraction spikes. Sparse
+        // by design; these are accent lights, not background.
+        scatter(nearStarLayer, count: 2000, spread: 6000,
+                scaleRange: 0.40...0.50,
+                alphaRange: 0.75...0.80,
+                variants:   [.pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .pinprick, .pinprick, .pinprick, .pinprick,
+                             .dimWhite, .mediumWhite, .yellowSun, .redGiant,
+                             .mediumWhite, .brightWhite, .blueGiant, .yellowSun, .redGiant])
 
         scatterNebulae()
+    }
+
+    /// Bake the far starfield into a small set of tile textures and stamp them
+    /// in a grid covering the play area + parallax buffer. Each tile contains
+    /// thousands of pinpricks, so the effective star count is
+    /// `tilesPerSide² × starsPerTile` while the live node count is just
+    /// `tilesPerSide²`.
+    private func tileFarStarfield(tilesPerSide: Int,
+                                  tileWorldSize: CGFloat,
+                                  starsPerTile: Int) {
+        let palette: [UIColor] = [
+            .white,
+            UIColor(white: 0.92, alpha: 1),
+            UIColor(red: 0.92, green: 0.95, blue: 1.0, alpha: 1),
+            UIColor(red: 1.0,  green: 0.95, blue: 0.85, alpha: 1),
+        ]
+        // Pre-render a few unique tiles so the same pattern doesn't repeat
+        // every neighbour. Random rotation on each placement breaks repetition
+        // further.
+        let tileVariants = (0..<6).map { _ in
+            StarField.makeFieldTexture(canvasSize: 1024,
+                                       starCount:  starsPerTile,
+                                       palette:    palette)
+        }
+        let half = (CGFloat(tilesPerSide) - 1) * 0.5
+        for i in 0..<tilesPerSide {
+            for j in 0..<tilesPerSide {
+                guard let texture = tileVariants.randomElement() else { continue }
+                let sprite       = SKSpriteNode(texture: texture)
+                sprite.size      = CGSize(width: tileWorldSize, height: tileWorldSize)
+                sprite.position  = CGPoint(
+                    x: (CGFloat(i) - half) * tileWorldSize,
+                    y: (CGFloat(j) - half) * tileWorldSize
+                )
+                sprite.blendMode = .add
+                sprite.zRotation = CGFloat.random(in: 0...(2 * .pi))
+                farStarLayer.addChild(sprite)
+            }
+        }
     }
 
     private func scatter(_ layer: SKNode, count: Int, spread: CGFloat,
@@ -182,22 +239,38 @@ final class GameScene: SKScene {
 
     private func scatterNebulae() {
         let atlas = NebulaAtlas.shared
-        for _ in 0..<14 {
+        // Each "cloud" is composed of many small overlapping puff sprites.
+        // The puffs are individually irregular; scattered together with a
+        // Gaussian-ish offset, the composite has no detectable outline.
+        let cloudCount = 10
+        for _ in 0..<cloudCount {
             let tint = NebulaTint.allCases.randomElement()!
-            guard let texture = atlas.textures[tint]?.randomElement() else { continue }
+            let cx   = CGFloat.random(in: -10000...10000)
+            let cy   = CGFloat.random(in: -10000...10000)
+            let cloudRadius: CGFloat = CGFloat.random(in: 2000...4500)
+            let puffCount = Int.random(in: 18...32)
 
-            let cloud = SKSpriteNode(texture: texture)
-            // Source texture is 512×512; rescale to world units. Vary size so
-            // clouds aren't uniform.
-            let visualRadius = CGFloat.random(in: 1800...3600)
-            cloud.size      = CGSize(width: visualRadius * 2, height: visualRadius * 2)
-            cloud.alpha     = CGFloat.random(in: 0.55...0.85)
-            cloud.blendMode = .add
-            // Random rotation so the same texture doesn't read as repeats.
-            cloud.zRotation = CGFloat.random(in: 0...(2 * .pi))
-            cloud.position  = CGPoint(x: CGFloat.random(in: -12000...12000),
-                                      y: CGFloat.random(in: -12000...12000))
-            nebulaLayer.addChild(cloud)
+            for _ in 0..<puffCount {
+                guard let texture = atlas.textures[tint]?.randomElement() else { continue }
+
+                // Approximate 2D Gaussian via sum of two uniform random offsets —
+                // produces a triangular distribution that's peaked at the center
+                // and tapers off. Puffs near the cloud center overlap densely;
+                // puffs near the edge are sparse and form the wispy outline.
+                let dxNorm = (CGFloat.random(in: -1...1) + CGFloat.random(in: -1...1)) * 0.5
+                let dyNorm = (CGFloat.random(in: -1...1) + CGFloat.random(in: -1...1)) * 0.5
+                let px = cx + dxNorm * cloudRadius * 1.4
+                let py = cy + dyNorm * cloudRadius * 1.4
+
+                let puff = SKSpriteNode(texture: texture)
+                let puffSize = CGFloat.random(in: 900...2200)
+                puff.size      = CGSize(width: puffSize, height: puffSize)
+                puff.alpha     = CGFloat.random(in: 0.12...0.32)
+                puff.blendMode = .add
+                puff.zRotation = CGFloat.random(in: 0...(2 * .pi))
+                puff.position  = CGPoint(x: px, y: py)
+                nebulaLayer.addChild(puff)
+            }
         }
     }
 
@@ -320,16 +393,19 @@ final class GameScene: SKScene {
             }
         }
 
-        // Parallax — three star tiers + a deep nebula tier. The factors are
-        // the FRACTION of the camera's motion that the layer keeps; smaller
-        // numbers = layer "follows" the camera more (appears farther away).
-        // Subtle separation is fine — even 0.10 between tiers reads as depth.
+        // Parallax — `layer.position = cam.position * factor`. A layer with
+        // factor = 1 moves perfectly with the camera and therefore appears
+        // STATIONARY on screen (= infinitely far). A layer with factor = 0
+        // is anchored to world coordinates and drifts past at full speed
+        // (= closest). So far stars get a factor near 1, the closer-feeling
+        // nebula gets a small factor, and `localObjectsLayer` (factor 0,
+        // unmoved) is the actual playfield.
         let cx = cameraNode.position.x
         let cy = cameraNode.position.y
-        nebulaLayer.position   = CGPoint(x: cx * 0.02, y: cy * 0.02)
-        farStarLayer.position  = CGPoint(x: cx * 0.06, y: cy * 0.06)
-        midStarLayer.position  = CGPoint(x: cx * 0.16, y: cy * 0.16)
-        nearStarLayer.position = CGPoint(x: cx * 0.32, y: cy * 0.32)
+        nebulaLayer.position   = CGPoint(x: cx * 0.15, y: cy * 0.15)
+        nearStarLayer.position = CGPoint(x: cx * 0.70, y: cy * 0.70)
+        midStarLayer.position  = CGPoint(x: cx * 0.80, y: cy * 0.80)
+        farStarLayer.position  = CGPoint(x: cx * 0.92, y: cy * 0.92)
     }
 
     // MARK: – Input routing
@@ -365,8 +441,11 @@ final class GameScene: SKScene {
             let dead: CGFloat = 12
             setInput {
                 $0.thrust    = offset.y >  dead
-                $0.turnLeft  = offset.x < -dead
-                $0.turnRight = offset.x >  dead
+                // Inverted: pushing the stick right turns the ship left,
+                // pushing left turns it right. Matches player expectation
+                // where the stick "leans into" the desired direction.
+                $0.turnLeft  = offset.x >  dead
+                $0.turnRight = offset.x < -dead
             }
         }
     }
