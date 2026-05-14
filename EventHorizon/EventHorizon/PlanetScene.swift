@@ -20,6 +20,39 @@ struct DockedPlanetInfo {
     let services:        Set<PlanetService>
 }
 
+extension DockedPlanetInfo {
+    /// Reconstruct a `DockedPlanetInfo` directly from JSON for "load game" /
+    /// "new game" flows that bypass the live `GameScene` docking animation.
+    /// World position is resolved via the orbital solver against now so the
+    /// disembark take-off matches the planet's current orbital position.
+    static func load(systemName: String, planetID: String) -> DockedPlanetInfo? {
+        guard let cfg = SolarSystemConfig.load(name: systemName),
+              let p   = cfg.planets.first(where: { $0.id == planetID })
+        else { return nil }
+
+        let pos = OrbitalSolver.position(of: planetID, in: cfg,
+                                         at: Date().timeIntervalSince1970) ?? .zero
+        let services: Set<PlanetService>
+        if let strs = p.services {
+            services = Set(strs.compactMap { PlanetService(rawValue: $0) })
+        } else {
+            services = Set(PlanetService.allCases)
+        }
+        let words    = p.sprite.replacingOccurrences(of: "_", with: " ")
+        let typeDesc = words.prefix(1).uppercased() + words.dropFirst()
+
+        return DockedPlanetInfo(
+            bodyID:          p.id,
+            displayName:     p.displayName ?? p.id.capitalized,
+            typeDescription: typeDesc,
+            spriteName:      p.sprite,
+            radius:          CGFloat(p.radius),
+            worldPosition:   pos,
+            services:        services
+        )
+    }
+}
+
 /// The "docked" view shown when the player lands on a planet.
 ///
 /// Layout (landscape):
@@ -50,6 +83,14 @@ final class PlanetScene: SKScene {
 
     private var menuButtons: [(node: SKShapeNode, action: () -> Void)] = []
 
+    /// Nodes hidden during disembark prep — restored on cancel, replaced
+    /// with the loading panel until the transition fires.
+    private var dismissableUI: [SKNode] = []
+    private var loadingPanel: SKNode?
+    /// `GameScene` that's being pre-warmed in parallel with the bar fill so
+    /// the actual transition is instant once the bar completes.
+    private var pendingGameScene: GameScene?
+
     // MARK: – Init
 
     init(size: CGSize, info: DockedPlanetInfo, gameMode: GameMode) {
@@ -66,12 +107,18 @@ final class PlanetScene: SKScene {
         backgroundColor = UIColor(white: 0.02, alpha: 1)
         anchorPoint     = CGPoint(x: 0.5, y: 0.5)
 
+        buildBackground()
         buildTitleBar()
-        buildLandscape()
         buildMenu()
         buildTextBox()
 
         setMode("Welcome to \(info.displayName). Docking clamps engaged. Standard atmospheric pressure.")
+
+        // Update the player's location and snapshot to disk. Landing is the
+        // canonical save trigger — anything bought/sold while docked is
+        // already in the live `PlayerProfile`.
+        PlayerProfile.shared.currentPlanetID = info.bodyID
+        PlayerProfile.shared.persistCurrentSave()
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
@@ -102,34 +149,70 @@ final class PlanetScene: SKScene {
         subtitle.position     = CGPoint(x: -hw + 28, y: hh - 54)
         addChild(subtitle)
 
-        // Disembark button — top-right corner.
-        let btn = makeButton(text: "DISEMBARK",
+        // Disembark + Quit buttons — top-right corner. Quit returns to the
+        // home screen; save already happened on dock so no confirmation.
+        let disembarkBtn = makeButton(text: "DISEMBARK",
                              size: CGSize(width: 110, height: 32),
                              position: CGPoint(x: hw - 75, y: hh - 30),
                              accent: UIColor(red: 0.85, green: 0.30, blue: 0.30, alpha: 0.85),
-                             action: { [weak self] in self?.disembark() })
-        addChild(btn)
+                             action: { [weak self] in self?.beginDisembarkSequence() })
+        addChild(disembarkBtn)
+        dismissableUI.append(disembarkBtn)
+
+        let quitBtn = makeButton(text: "QUIT",
+                             size: CGSize(width: 70, height: 28),
+                             position: CGPoint(x: hw - 75 - 110 / 2 - 10 - 70 / 2, y: hh - 30),
+                             accent: UIColor(white: 0.18, alpha: 0.95),
+                             action: { [weak self] in self?.quitToHome() })
+        addChild(quitBtn)
+        dismissableUI.append(quitBtn)
     }
 
-    private func buildLandscape() {
-        let landscapeSize = CGSize(width: 360, height: 250)
-        let texture       = loadLandscapeTexture(for: info.spriteName)
-                              ?? Self.makeProceduralLandscape(size: landscapeSize)
-        let frame         = SKSpriteNode(texture: texture)
-        frame.size        = landscapeSize
-        frame.position    = CGPoint(x: -size.width / 2 + 28 + landscapeSize.width / 2,
-                                    y: -20)
-        addChild(frame)
+    private func quitToHome() {
+        let loading = LoadingScene(size: size)
+        loading.scaleMode = .resizeFill
+        view?.presentScene(loading, transition: .fade(withDuration: 0.30))
+    }
 
-        let border               = SKShapeNode(
-            rect: CGRect(x: -landscapeSize.width / 2, y: -landscapeSize.height / 2,
-                         width: landscapeSize.width, height: landscapeSize.height),
-            cornerRadius: 4
-        )
-        border.fillColor   = .clear
-        border.strokeColor = UIColor(white: 1, alpha: 0.25)
-        border.lineWidth   = 1
-        frame.addChild(border)
+    private func buildBackground() {
+        // Full-screen port artwork. Scaled to fill the entire scene rect
+        // and pushed to the back; menu buttons + text box overlay on top.
+        let texture = Self.loadPortTexture(named: "badlands")
+                       ?? Self.makeProceduralLandscape(size: size)
+        let bg          = SKSpriteNode(texture: texture)
+        bg.size         = sizeFilling(viewportSize: size, textureSize: texture.size())
+        bg.position     = .zero
+        bg.zPosition    = -10
+        addChild(bg)
+
+        // Subtle vignette so light text near the edges stays legible against
+        // bright sky / lit terrain in the artwork.
+        let vignette = SKShapeNode(rectOf: size)
+        vignette.fillColor   = UIColor(white: 0, alpha: 0.25)
+        vignette.strokeColor = .clear
+        vignette.zPosition   = -9
+        addChild(vignette)
+    }
+
+    /// Aspect-fill scale: ensures the artwork covers the whole scene with no
+    /// transparent gaps; excess is cropped by the scene bounds.
+    private func sizeFilling(viewportSize: CGSize, textureSize: CGSize) -> CGSize {
+        guard textureSize.width > 0, textureSize.height > 0 else { return viewportSize }
+        let sx = viewportSize.width  / textureSize.width
+        let sy = viewportSize.height / textureSize.height
+        let s  = max(sx, sy)
+        return CGSize(width: textureSize.width * s, height: textureSize.height * s)
+    }
+
+    private static func loadPortTexture(named base: String) -> SKTexture? {
+        for ext in ["jpg", "png"] {
+            if let url = Bundle.main.url(forResource: base, withExtension: ext,
+                                         subdirectory: "Art.scnassets/ports"),
+               let img = UIImage(contentsOfFile: url.path) {
+                return SKTexture(image: img)
+            }
+        }
+        return nil
     }
 
     private func buildMenu() {
@@ -154,9 +237,10 @@ final class PlanetScene: SKScene {
             let btn = makeButton(text: entry.0.buttonLabel,
                                  size: buttonSize,
                                  position: CGPoint(x: columnX, y: y),
-                                 accent: UIColor(white: 0.20, alpha: 0.95),
+                                 accent: UIColor(white: 0.10, alpha: 0.92),
                                  action: entry.1)
             addChild(btn)
+            dismissableUI.append(btn)
         }
     }
 
@@ -168,8 +252,10 @@ final class PlanetScene: SKScene {
                          width: boxWidth, height: boxHeight),
             cornerRadius: 6
         )
-        textBoxBg.fillColor   = UIColor(white: 0.05, alpha: 0.85)
-        textBoxBg.strokeColor = UIColor(white: 1, alpha: 0.25)
+        // Near-opaque so light text reads even when the badlands artwork
+        // behind it is bright.
+        textBoxBg.fillColor   = UIColor(white: 0.04, alpha: 0.92)
+        textBoxBg.strokeColor = UIColor(white: 1, alpha: 0.35)
         textBoxBg.lineWidth   = 1
         textBoxBg.position    = CGPoint(x: 0, y: -size.height / 2 + boxHeight / 2 + 24)
         addChild(textBoxBg)
@@ -270,29 +356,132 @@ final class PlanetScene: SKScene {
         setMode("BANK — Balance: \(PlayerProfile.shared.credits) credits. Outstanding debts: 0. The teller looks bored. 'Come back when you have business,' he says.")
     }
 
-    private func disembark() {
-        // Spawn at the planet's CURRENT position. Planets keep orbiting
-        // while the player is docked, so the position captured at dock
-        // time may have drifted by minutes-of-arc. Re-resolve from the
-        // orbital solver using wall-clock time so the take-off point
-        // matches what the player sees in the system view.
+    private static let disembarkSteps: [String] = [
+        "Releasing docking clamps…",
+        "Spooling fusion reactor…",
+        "Calibrating inertial dampers…",
+        "Loading flight plan into nav…",
+        "Pressurizing the cockpit…",
+        "Clearing atmospheric exit lane…",
+    ]
+
+    /// Replaces the menu/disembark buttons with a progress bar that fills
+    /// over a short sequence of flavour notes, then triggers the real
+    /// `disembark()` transition. Saves are already on dock, so this is
+    /// purely visual cover for scene setup.
+    private func beginDisembarkSequence() {
+        guard loadingPanel == nil else { return }   // ignore re-tap
+
+        for node in dismissableUI { node.isHidden = true }
+        menuButtons.removeAll()                     // disable any inflight taps
+
+        // Kick off GameScene construction NOW so its expensive setup
+        // (starfield, solar-system install) runs in parallel with the bar
+        // animation. By the time the bar fills, the scene is fully built
+        // and `presentScene` is a near-instant swap.
         let now = Date().timeIntervalSince1970
         let spawnPos: CGPoint
-        if let cfg = SolarSystemConfig.load(name: "home_system"),
+        if let cfg = SolarSystemConfig.load(name: PlayerProfile.shared.currentSystem),
            let resolved = OrbitalSolver.position(of: info.bodyID, in: cfg, at: now) {
             spawnPos = resolved
         } else {
             spawnPos = info.worldPosition
         }
+        let game = GameScene(size: size,
+                             mode: gameMode,
+                             spawnAt: spawnPos,
+                             disembarkFrom: spawnPos)
+        pendingGameScene = game
+        game.prepareSceneAsync { /* prep finished; transition is gated by bar timer */ }
 
-        // The rise animation starts and ends at the same point — ship grows
-        // out of the planet's exact coordinates.
-        let game        = GameScene(size: size,
-                                    mode: gameMode,
-                                    spawnAt: spawnPos,
-                                    disembarkFrom: spawnPos)
+        let panel = SKNode()
+        addChild(panel)
+        loadingPanel = panel
+
+        let hw = size.width / 2
+        let panelW: CGFloat = min(size.width - 80, 520)
+        let panelH: CGFloat = 90
+        let backdrop = SKShapeNode(
+            rect: CGRect(x: -panelW / 2, y: -panelH / 2, width: panelW, height: panelH),
+            cornerRadius: 8
+        )
+        backdrop.fillColor   = UIColor(white: 0.04, alpha: 0.92)
+        backdrop.strokeColor = UIColor(white: 1, alpha: 0.32)
+        backdrop.lineWidth   = 1
+        backdrop.position    = CGPoint(x: 0, y: 20)
+        panel.addChild(backdrop)
+
+        let title             = SKLabelNode(text: "DISEMBARK PREP")
+        title.fontName        = "AvenirNext-DemiBold"
+        title.fontSize        = 12
+        title.fontColor       = UIColor(white: 0.60, alpha: 1)
+        title.position        = CGPoint(x: 0, y: panelH / 2 - 18)
+        backdrop.addChild(title)
+
+        let stepLbl             = SKLabelNode(text: Self.disembarkSteps[0])
+        stepLbl.fontName        = "AvenirNext-Regular"
+        stepLbl.fontSize        = 14
+        stepLbl.fontColor       = .white
+        stepLbl.numberOfLines   = 1
+        stepLbl.preferredMaxLayoutWidth = panelW - 32
+        stepLbl.position        = CGPoint(x: 0, y: 6)
+        backdrop.addChild(stepLbl)
+
+        let barW: CGFloat = panelW - 40
+        let barH: CGFloat = 6
+        let barTrack = SKShapeNode(
+            rect: CGRect(x: -barW / 2, y: -barH / 2, width: barW, height: barH),
+            cornerRadius: barH / 2
+        )
+        barTrack.fillColor   = UIColor(white: 0.14, alpha: 1)
+        barTrack.strokeColor = .clear
+        barTrack.position    = CGPoint(x: 0, y: -panelH / 2 + 18)
+        backdrop.addChild(barTrack)
+
+        // Fill grows from left → right via xScale. Anchor at left edge so
+        // scaling doesn't push it off-center.
+        let barFill = SKShapeNode(
+            rect: CGRect(x: 0, y: -barH / 2, width: barW, height: barH),
+            cornerRadius: barH / 2
+        )
+        barFill.fillColor   = UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 1)
+        barFill.strokeColor = .clear
+        barFill.position    = CGPoint(x: -barW / 2, y: -panelH / 2 + 18)
+        barFill.xScale      = 0.001
+        backdrop.addChild(barFill)
+
+        let totalDuration: TimeInterval = 2.4
+        let steps = Self.disembarkSteps
+        let stepDur = totalDuration / TimeInterval(steps.count)
+
+        // Schedule each prep note so the text and bar stay in sync.
+        for (i, msg) in steps.enumerated() {
+            let when = stepDur * TimeInterval(i)
+            backdrop.run(.sequence([
+                .wait(forDuration: when),
+                .run { stepLbl.text = msg },
+            ]))
+        }
+
+        let grow = SKAction.scaleX(to: 1.0, duration: totalDuration)
+        grow.timingMode = .easeInEaseOut
+        barFill.run(grow)
+
+        // Hand off to the actual disembark once the bar fills.
+        _ = hw  // (silence unused warning if compiler whinges)
+        run(.sequence([
+            .wait(forDuration: totalDuration),
+            .run { [weak self] in self?.performDisembarkTransition() },
+        ]))
+    }
+
+    private func performDisembarkTransition() {
+        // Scene was pre-built and pre-warmed in `beginDisembarkSequence`.
+        // `prepareScene()` inside didMove is a no-op when `isPrepared` is
+        // already true, so this transition is essentially instant.
+        guard let game = pendingGameScene else { return }
         game.scaleMode  = .resizeFill
-        view?.presentScene(game, transition: .fade(withDuration: 0.5))
+        view?.presentScene(game, transition: .fade(withDuration: 0.25))
     }
 
     // MARK: – Landscape texture loading

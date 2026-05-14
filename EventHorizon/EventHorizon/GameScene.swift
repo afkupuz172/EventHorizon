@@ -29,6 +29,13 @@ final class GameScene: SKScene {
     private var fireButton:      SKShapeNode!
     private var joystickTouch:   UITouch?
     private var joystickAnchor:  CGPoint = .zero
+    /// Current joystick deflection in camera-space coords. Stored so that
+    /// `update(_:)` can re-evaluate turn flags every frame instead of only
+    /// when the finger moves — UIKit doesn't fire `touchesMoved` when the
+    /// finger is held still, so without this the input flags lock to
+    /// whatever was set at the last move event and the ship sails right
+    /// past its target heading.
+    private var joystickOffset: CGPoint?
     private var fireTouch:       UITouch?
     private var shieldBar:       SKShapeNode!
     private var shieldFill:      SKShapeNode!
@@ -87,11 +94,17 @@ final class GameScene: SKScene {
     /// placed here at scale 0, then animated to its sim position.
     private let disembarkFrom: CGPoint?
 
+    /// Star-system JSON to load. Defaults to the player's last known
+    /// system — set on Load Game and updated whenever the player jumps.
+    private let systemName: String
+
     init(size: CGSize,
          mode: GameMode,
+         systemName: String? = nil,
          spawnAt: CGPoint? = nil,
          disembarkFrom: CGPoint? = nil) {
         self.mode          = mode
+        self.systemName    = systemName ?? PlayerProfile.shared.currentSystem
         self.spawnAt       = spawnAt
         self.disembarkFrom = disembarkFrom
         super.init(size: size)
@@ -100,13 +113,52 @@ final class GameScene: SKScene {
 
     // MARK: – Lifecycle
 
-    override func didMove(to view: SKView) {
+    /// Set true once the heavy `setup*` calls have run. Lets `prepareScene*`
+    /// and `didMove` be invoked in either order without double-building.
+    private var isPrepared = false
+
+    /// Synchronously builds every scene element except view-bound gestures.
+    /// Safe to call before the scene is presented — `addChild` doesn't
+    /// require a parent view.
+    func prepareScene() {
+        guard !isPrepared else { return }
+        isPrepared = true
         backgroundColor = .black
         setupCamera()
         setupStarField()
         setupBoundary()
         setupSolarSystem()
         setupHUD()
+    }
+
+    /// Same heavy build as `prepareScene` but split across main-queue async
+    /// dispatches so the calling scene's UI (e.g. the disembark loading
+    /// bar) keeps animating between chunks instead of stalling for the
+    /// whole prep duration.
+    func prepareSceneAsync(completion: @escaping () -> Void) {
+        guard !isPrepared else { completion(); return }
+        isPrepared = true
+        // Steps are ordered: each depends on the camera/scene layers set up
+        // by earlier ones. Starfield is the heaviest by far so it gets its
+        // own slot.
+        let steps: [() -> Void] = [
+            { [weak self] in self?.backgroundColor = .black; self?.setupCamera() },
+            { [weak self] in self?.setupStarField() },
+            { [weak self] in self?.setupBoundary(); self?.setupSolarSystem() },
+            { [weak self] in self?.setupHUD() },
+        ]
+        var i = 0
+        func next() {
+            guard i < steps.count else { completion(); return }
+            steps[i]()
+            i += 1
+            DispatchQueue.main.async { next() }
+        }
+        DispatchQueue.main.async { next() }
+    }
+
+    override func didMove(to view: SKView) {
+        prepareScene()                  // no-op if pre-warmed by the caller
         setupGestures(in: view)
 
         // Pre-position the camera so the brief gap before the first snapshot
@@ -341,9 +393,9 @@ final class GameScene: SKScene {
 
     private func setupSolarSystem() {
         // The system config (which planets, suns, asteroids) lives in JSON.
-        // Eventually we'd pick a different file per system — for now, the
-        // game always loads "home_system".
-        guard let system = SolarSystem(name: "home_system") else { return }
+        // Which file we load is driven by the player's current system,
+        // which the save profile / Load Game pipeline keeps current.
+        guard let system = SolarSystem(name: systemName) else { return }
         system.install(into: localObjectsLayer)
         solarSystem = system
 
@@ -490,6 +542,11 @@ final class GameScene: SKScene {
         leanAmount += (target - leanAmount) * 0.12
         if let sid = mySessionId { shipNodes[sid]?.applyLean(leanAmount) }
 
+        // Re-apply joystick → input mapping every frame so the turn flags
+        // stay live as the ship rotates toward target, even when the finger
+        // is held still (no further `touchesMoved` events).
+        applyJoystickInput()
+
         // Offline sim drives the same delegate path as the network. Pause
         // while docking so the player's ship doesn't drift mid-animation.
         if mode == .singlePlayer, !isDocking, let sim = offlineSim {
@@ -603,6 +660,7 @@ final class GameScene: SKScene {
                 joystickAnchor = p
                 joystick.position = p
                 joystick.reset()
+                joystickOffset = .zero
             } else if p.x >= 0, fireTouch == nil {
                 fireTouch = touch
                 setInput { $0.firing = true }
@@ -731,41 +789,45 @@ final class GameScene: SKScene {
             let p      = touch.location(in: cameraNode)
             let offset = CGPoint(x: p.x - joystickAnchor.x, y: p.y - joystickAnchor.y)
             joystick.setThumb(offset: offset)
+            joystickOffset = offset
+            applyJoystickInput()
+        }
+    }
 
-            let dead: CGFloat = 12
-            let mag           = hypot(offset.x, offset.y)
-            guard mag > dead else {
-                setInput {
-                    $0.thrust    = false
-                    $0.turnLeft  = false
-                    $0.turnRight = false
-                }
-                continue
-            }
-
-            // The joystick now controls FACING: deflect in any direction and
-            // the ship rotates to point that way and thrusts forward.
-            //
-            // For the angular difference we use atan2(sin(d), cos(d)) — this
-            // always returns a value in (−π, π] in a single step, regardless
-            // of the input ranges. The previous `while`-loop normalization
-            // was both slow (could loop many times if the sim's angle drifts
-            // far from zero) and brittle at exactly ±π, where a tiny jitter
-            // could flip the chosen turn direction frame-to-frame.
-            let targetAngle = atan2(offset.y, offset.x)
-            let current     = currentPlayerHeading()
-            let rawDiff     = targetAngle - current
-            let diff        = atan2(sin(rawDiff), cos(rawDiff))
-
-            // Slightly wider dead zone (≈5.7°) so the ship settles cleanly
-            // instead of micro-correcting when it's already pointing the
-            // right way.
-            let angleDead: CGFloat = 0.10
+    /// Translates the stored joystick deflection into turn/thrust flags.
+    /// Called from `touchesMoved` AND from `update(_:)` every frame so the
+    /// ship keeps re-aiming even when the finger is held still — otherwise
+    /// the last move event's flags persist past the target heading and the
+    /// ship oscillates instead of settling.
+    private func applyJoystickInput() {
+        guard let offset = joystickOffset else { return }
+        let dead: CGFloat = 12
+        let mag           = hypot(offset.x, offset.y)
+        guard mag > dead else {
             setInput {
-                $0.thrust    = true                    // any deflection = forward
-                $0.turnRight = diff >  angleDead       // server: turnRight increments angle (CCW)
-                $0.turnLeft  = diff < -angleDead       // server: turnLeft decrements angle (CW)
+                $0.thrust    = false
+                $0.turnLeft  = false
+                $0.turnRight = false
             }
+            return
+        }
+
+        // Joystick controls FACING: deflect in any direction → rotate to point
+        // that way and thrust forward. `atan2(sin, cos)` gives the signed
+        // shortest difference in (−π, π] without while-loop normalization,
+        // and is stable at exactly ±π where naive subtraction flip-flops.
+        let targetAngle = atan2(offset.y, offset.x)
+        let current     = currentPlayerHeading()
+        let rawDiff     = targetAngle - current
+        let diff        = atan2(sin(rawDiff), cos(rawDiff))
+
+        // Dead zone slightly larger than one tick's turn step so the ship
+        // settles cleanly instead of micro-correcting around the target.
+        let angleDead: CGFloat = 0.10
+        setInput {
+            $0.thrust    = true                    // any deflection = forward
+            $0.turnRight = diff >  angleDead       // server: turnRight increments angle (CCW)
+            $0.turnLeft  = diff < -angleDead       // server: turnLeft decrements angle (CW)
         }
     }
 
@@ -785,7 +847,8 @@ final class GameScene: SKScene {
     private func endTouches(_ touches: Set<UITouch>) {
         for touch in touches {
             if touch === joystickTouch {
-                joystickTouch = nil
+                joystickTouch  = nil
+                joystickOffset = nil
                 joystick.reset()
                 setInput {
                     $0.thrust    = false

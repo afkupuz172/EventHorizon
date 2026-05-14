@@ -5,35 +5,49 @@ enum GameMode {
     case multiplayer
 }
 
+extension GameMode {
+    var saveMode: SaveProfile.Mode {
+        switch self {
+        case .singlePlayer: return .singlePlayer
+        case .multiplayer:  return .multiplayer
+        }
+    }
+}
+
 final class LoadingScene: SKScene {
 
-    private var mode: GameMode = .multiplayer
+    /// Mode persists across LoadingScene instances so navigating
+    /// New Game / Load Game and tapping BACK preserves the user's choice.
+    private static var lastMode: GameMode = .singlePlayer
+    private var mode: GameMode {
+        get { Self.lastMode }
+        set { Self.lastMode = newValue }
+    }
 
     private var singleBtn:    SKShapeNode!
     private var singleLabel:  SKLabelNode!
     private var multiBtn:     SKShapeNode!
     private var multiLabel:   SKLabelNode!
-    private var joinBtn:      SKShapeNode!
-    private var joinLabel:    SKLabelNode!
+    private var newGameBtn:   SKShapeNode!
+    private var loadGameBtn:  SKShapeNode!
+    private var errorLabel:   SKLabelNode!
 
     override func didMove(to view: SKView) {
         backgroundColor = .black
-        anchorPoint     = CGPoint(x: 0.5, y: 0.5)   // (0,0) sits at the view center
+        anchorPoint     = CGPoint(x: 0.5, y: 0.5)
         buildStarfield()
         buildTitle()
         buildModeToggle()
-        buildJoinButton()
+        buildPrimaryButtons()
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
-        // Re-anchor on rotation / size change so layout stays centered.
         anchorPoint = CGPoint(x: 0.5, y: 0.5)
     }
 
     // MARK: – Build
 
     private func buildStarfield() {
-        // Spread wider than the view so rotation/resize never reveals empty edges.
         let spread = max(size.width, size.height) * 1.5
         for _ in 0..<240 {
             let r = CGFloat.random(in: 0.4...1.6)
@@ -81,22 +95,51 @@ final class LoadingScene: SKScene {
         renderToggle()
     }
 
-    private func buildJoinButton() {
+    private func buildPrimaryButtons() {
         let w: CGFloat = 220
-        let h: CGFloat = 56
-        joinBtn = SKShapeNode(rect: CGRect(x: -w/2, y: -h/2, width: w, height: h), cornerRadius: 8)
-        joinBtn.fillColor   = UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 0.85)
-        joinBtn.strokeColor = UIColor(red: 0.45, green: 0.75, blue: 1.0, alpha: 1.0)
-        joinBtn.lineWidth   = 1.5
-        joinBtn.position    = CGPoint(x: 0, y: -size.height * 0.18)
+        let h: CGFloat = 52
+        let y: CGFloat = -size.height * 0.18
 
-        joinLabel                = SKLabelNode(text: "JOIN GAME")
-        joinLabel.fontName       = "AvenirNext-Bold"
-        joinLabel.fontSize       = 18
-        joinLabel.fontColor      = .white
-        joinLabel.verticalAlignmentMode = .center
-        joinBtn.addChild(joinLabel)
-        addChild(joinBtn)
+        newGameBtn = makeBigButton(text: "NEW GAME",
+                                   size: CGSize(width: w, height: h),
+                                   position: CGPoint(x: -w / 2 - 8, y: y),
+                                   primary: true)
+        loadGameBtn = makeBigButton(text: "LOAD GAME",
+                                    size: CGSize(width: w, height: h),
+                                    position: CGPoint(x: w / 2 + 8, y: y),
+                                    primary: false)
+        addChild(newGameBtn)
+        addChild(loadGameBtn)
+
+        errorLabel             = SKLabelNode(text: "")
+        errorLabel.fontName    = "AvenirNext-Medium"
+        errorLabel.fontSize    = 13
+        errorLabel.fontColor   = UIColor(red: 0.95, green: 0.40, blue: 0.35, alpha: 1)
+        errorLabel.position    = CGPoint(x: 0, y: y - 50)
+        addChild(errorLabel)
+    }
+
+    private func makeBigButton(text: String, size s: CGSize,
+                               position: CGPoint, primary: Bool) -> SKShapeNode {
+        let btn = SKShapeNode(rect: CGRect(x: -s.width / 2, y: -s.height / 2,
+                                           width: s.width, height: s.height),
+                              cornerRadius: 8)
+        btn.fillColor   = primary
+            ? UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 0.85)
+            : UIColor(white: 0.10, alpha: 0.85)
+        btn.strokeColor = primary
+            ? UIColor(red: 0.45, green: 0.75, blue: 1.0, alpha: 1.0)
+            : UIColor(white: 0.40, alpha: 0.65)
+        btn.lineWidth   = 1.5
+        btn.position    = position
+
+        let lbl                       = SKLabelNode(text: text)
+        lbl.fontName                  = "AvenirNext-Bold"
+        lbl.fontSize                  = 18
+        lbl.fontColor                 = .white
+        lbl.verticalAlignmentMode     = .center
+        btn.addChild(lbl)
+        return btn
     }
 
     private func makePillButton(text: String, position: CGPoint) -> (SKShapeNode, SKLabelNode) {
@@ -119,8 +162,8 @@ final class LoadingScene: SKScene {
     }
 
     private func renderToggle() {
-        let activeFill   = UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 0.85)
-        let activeStroke = UIColor(red: 0.45, green: 0.75, blue: 1.0, alpha: 1.0)
+        let activeFill    = UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 0.85)
+        let activeStroke  = UIColor(red: 0.45, green: 0.75, blue: 1.0, alpha: 1.0)
         let dormantFill   = UIColor(white: 1, alpha: 0.06)
         let dormantStroke = UIColor(white: 1, alpha: 0.25)
 
@@ -141,14 +184,45 @@ final class LoadingScene: SKScene {
         guard let t = touches.first else { return }
         let p = t.location(in: self)
 
-        if singleBtn.contains(p) { mode = .singlePlayer; renderToggle(); return }
-        if multiBtn.contains(p)  { mode = .multiplayer;  renderToggle(); return }
-        if joinBtn.contains(p)   { startGame(); return }
+        if singleBtn.contains(p)  { mode = .singlePlayer; renderToggle(); return }
+        if multiBtn.contains(p)   { mode = .multiplayer;  renderToggle(); return }
+        if newGameBtn.contains(p) { openNewGame();  return }
+        if loadGameBtn.contains(p) { openLoadGame(); return }
     }
 
-    private func startGame() {
-        let game        = GameScene(size: view?.bounds.size ?? size, mode: mode)
-        game.scaleMode  = .resizeFill
-        view?.presentScene(game, transition: .fade(withDuration: 0.4))
+    private func openNewGame() {
+        proceedIfServerReachable {
+            let s = NewGameScene(size: self.view?.bounds.size ?? self.size, gameMode: self.mode)
+            s.scaleMode = .resizeFill
+            self.view?.presentScene(s, transition: .fade(withDuration: 0.30))
+        }
+    }
+
+    private func openLoadGame() {
+        proceedIfServerReachable {
+            let s = LoadGameScene(size: self.view?.bounds.size ?? self.size, gameMode: self.mode)
+            s.scaleMode = .resizeFill
+            self.view?.presentScene(s, transition: .fade(withDuration: 0.30))
+        }
+    }
+
+    /// In multiplayer mode, only call `next` if the server's TCP port answers.
+    /// Singleplayer never blocks — there's nothing to reach.
+    private func proceedIfServerReachable(_ next: @escaping () -> Void) {
+        errorLabel.text = ""
+        guard mode == .multiplayer else { next(); return }
+
+        errorLabel.text = "Contacting server…"
+        errorLabel.fontColor = UIColor(white: 0.65, alpha: 1)
+        NetworkManager.probeServer { [weak self] reachable in
+            guard let self else { return }
+            if reachable {
+                self.errorLabel.text = ""
+                next()
+            } else {
+                self.errorLabel.fontColor = UIColor(red: 0.95, green: 0.40, blue: 0.35, alpha: 1)
+                self.errorLabel.text = "Multiplayer server unreachable."
+            }
+        }
     }
 }

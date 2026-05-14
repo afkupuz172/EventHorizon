@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 // ── Snapshot types ─────────────────────────────────────────────────────────────
 
@@ -69,6 +70,42 @@ final class NetworkManager {
         task?.resume()
         sendRaw(["type": "join"])
         listenTask = Task { [weak self] in await self?.listenLoop() }
+    }
+
+    /// Lightweight TCP-only check that the server's port accepts connections.
+    /// Caller-facing API for "Multiplayer requires a live server" gating —
+    /// avoids dragging a full WebSocket handshake into the menu flow.
+    /// Default endpoint matches `connect(to:)`. `completion` is invoked on
+    /// the main thread exactly once.
+    static func probeServer(host: String = "localhost",
+                            port: UInt16 = 2568,
+                            timeout: TimeInterval = 2.5,
+                            completion: @escaping (Bool) -> Void) {
+        let conn = NWConnection(
+            host:   NWEndpoint.Host(host),
+            port:   NWEndpoint.Port(integerLiteral: port),
+            using:  .tcp
+        )
+        var done = false
+        let finish: (Bool) -> Void = { ok in
+            DispatchQueue.main.async {
+                guard !done else { return }
+                done = true
+                conn.cancel()
+                completion(ok)
+            }
+        }
+        conn.stateUpdateHandler = { state in
+            switch state {
+            case .ready:                       finish(true)
+            case .failed, .cancelled, .waiting(_): finish(false)
+            default: break
+            }
+        }
+        conn.start(queue: .global())
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            finish(false)
+        }
     }
 
     func disconnect() {

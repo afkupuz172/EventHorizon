@@ -14,6 +14,23 @@ final class PlayerProfile {
     static let shared = PlayerProfile()
     private init() { initInstalledOutfits() }
 
+    /// Captain identity, persisted to the save profile. Empty until a
+    /// session is started via New Game or Load Game.
+    var captainName: String = ""
+    var shipName:    String = ""
+
+    /// Where the player is right now in the world. Used to drop them back
+    /// into the correct planet on Load Game and to spawn `GameScene` into
+    /// the right star system on departure.
+    var currentSystem:   String = "home_system"
+    var currentPlanetID: String = "hadrian"
+
+    /// Faction standings. Reserved for gameplay; saved as-is.
+    var reputation: [String: Int] = [:]
+
+    /// Single- vs multiplayer session — also the save bucket.
+    var mode: SaveProfile.Mode = .singlePlayer
+
     /// Canonical ID of the hull the player is flying.
     /// Changing the hull resets `installedOutfits` to the new ship's JSON defaults.
     var currentShipID: String = "ringship" {
@@ -102,5 +119,52 @@ final class PlayerProfile {
         ShipRegistry.shared.allIDs.compactMap { id in
             ShipMetadata.byID[id].map { (id: id, metadata: $0) }
         }
+    }
+
+    // MARK: – Save profile bridge
+
+    /// Hydrate the singleton from a save file. Order matters: setting
+    /// `currentShipID` clears `installedOutfits` via `didSet`, so we
+    /// overwrite it afterwards.
+    func loadFromSave(_ profile: SaveProfile) {
+        captainName     = profile.captainName
+        shipName        = profile.shipName
+        currentSystem   = profile.currentSystem
+        currentPlanetID = profile.currentPlanetID
+        reputation      = profile.reputation
+        mode            = profile.mode
+        currentShipID   = profile.shipID
+        installedOutfits = profile.installedOutfits
+        credits         = profile.credits
+    }
+
+    /// Snapshot the current runtime state into a save record. `createdAtUnix`
+    /// is preserved if a prior save exists for the same captain+mode.
+    func toSaveProfile() -> SaveProfile {
+        let now = Date().timeIntervalSince1970
+        let created = SaveProfileStore.shared
+            .list(mode: mode)
+            .first(where: { $0.captainName == captainName })?
+            .createdAtUnix ?? now
+        return SaveProfile(
+            version:          SaveProfile.currentVersion,
+            mode:             mode,
+            captainName:      captainName,
+            shipName:         shipName,
+            currentSystem:    currentSystem,
+            currentPlanetID:  currentPlanetID,
+            shipID:           currentShipID,
+            credits:          credits,
+            installedOutfits: installedOutfits,
+            reputation:       reputation,
+            createdAtUnix:    created,
+            lastSavedAtUnix:  now
+        )
+    }
+
+    /// Convenience used by `PlanetScene.didMove`.
+    func persistCurrentSave() {
+        guard !captainName.isEmpty else { return }
+        SaveProfileStore.shared.save(toSaveProfile())
     }
 }
