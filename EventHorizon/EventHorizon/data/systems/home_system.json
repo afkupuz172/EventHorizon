@@ -7,22 +7,23 @@
   "lightingEnvironment": "HDR_multi_nebulae",
   "suns": [
     {
-      "sprite":      "yellow_sun",
-      "displayName": "Sol",
-      "x":           0,
-      "y":           0,
-      "radius":      420
+      "id":           "sol",
+      "sprite":       "yellow_sun",
+      "displayName":  "Sol",
+      "radius":       420,
+      "location":     {"x": 0, "y": 0},
+      "orbit":        0
     }
   ],
   "planets": [
     {
-      "sprite":        "rock_planet",
-      "displayName":   "Hadrian",
-      "centerX":       0,
-      "centerY":       0,
-      "orbitDistance": 2600,
-      "radius":        260,
-      "services":      ["bar", "trade", "shipyard", "outfitter", "bank"]
+      "id":          "hadrian",
+      "sprite":      "rock_planet",
+      "displayName": "Hadrian",
+      "radius":      260,
+      "location":    "sol",
+      "orbit":       2600,
+      "services":    ["bar", "trade", "shipyard", "outfitter", "bank"]
     }
   ],
   "asteroids": {
@@ -34,54 +35,27 @@
     "maxSpinPeriod": 28.0
   },
   "fleets": [
-    {
-      "name": "Small Core Pirates",
-      "strength": 500
-    },
-    {
-      "name": "Large Core Pirates",
-      "strength": 1400
-    },
-    {
-      "name": "Large Syndicate",
-      "strength": 6000
-    },
-    {
-      "name": "Korath Large Raid",
-      "strength": 60000
-    },
-    {
-      "name": "Korath Miners",
-      "strength": 30000
-    }
+    {"name": "Small Core Pirates",   "strength": 500},
+    {"name": "Large Core Pirates",   "strength": 1400},
+    {"name": "Large Syndicate",      "strength": 6000},
+    {"name": "Korath Large Raid",    "strength": 60000},
+    {"name": "Korath Miners",        "strength": 30000}
   ],
   "trade": {
-    "Clothing": 364,
-    "Electronics": 664,
-    "Equipment": 601,
-    "Food": 298,
+    "Clothing":     364,
+    "Electronics":  664,
+    "Equipment":    601,
+    "Food":         298,
     "Heavy Metals": 889,
-    "Industrial": 754,
+    "Industrial":   754,
     "Luxury Goods": 962,
-    "Medical": 746,
-    "Metal": 338,
-    "Plastic": 266
+    "Medical":      746,
+    "Metal":        338,
+    "Plastic":      266
   },
   "minables": [
-    {
-      "resource": "iron",
-      "amount": 2,
-      "rarity": 2.87775
-    },
-    {
-      "resource": "lead",
-      "amount": 2,
-      "rarity": 3.17637
-    },
-    {
-      "resource": "silicon",
-      "amount": 30,
-      "rarity": 2.47255
-    }
-  ],
+    {"resource": "iron",    "amount": 2,  "rarity": 2.87775},
+    {"resource": "lead",    "amount": 2,  "rarity": 3.17637},
+    {"resource": "silicon", "amount": 30, "rarity": 2.47255}
+  ]
 }

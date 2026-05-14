@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild *)",
+      "Bash(find /Users/master/EventHorizon/*)",
+      "Bash(grep *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(git *)",
+      "Read(/Users/master/EventHorizon/*)",
+      "Edit(/Users/master/EventHorizon/*)",
+      "Write(/Users/master/EventHorizon/*)"
+    ]
+  }
+}

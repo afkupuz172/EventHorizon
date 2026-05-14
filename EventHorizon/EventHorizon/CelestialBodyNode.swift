@@ -11,7 +11,7 @@ enum PlanetService: String, CaseIterable {
         switch self {
         case .bar:       return "BAR"
         case .trade:     return "TRADE"
-        case .shipyard:  return "SHIP VENDOR"
+        case .shipyard:  return "SHIPYARD"
         case .outfitter: return "OUTFITTER"
         case .bank:      return "BANK"
         }
@@ -30,6 +30,11 @@ final class CelestialBodyNode: SKNode {
 
     enum Kind { case sun, planet, asteroid }
 
+    /// Stable, JSON-supplied slug used by the orbital solver to locate this
+    /// body's center (other bodies reference it via `location: "<id>"`).
+    /// Asteroids get auto-generated IDs since they're not orbital.
+    let id:               String
+
     let kind:             Kind
     let displayName:      String
     let typeDescription:  String
@@ -46,12 +51,14 @@ final class CelestialBodyNode: SKNode {
 
     private weak var selectionBracket: SKShapeNode?
 
-    init(kind: Kind,
+    init(id: String,
+         kind: Kind,
          displayName: String,
          typeDescription: String,
          radius: CGFloat,
          spriteName: String? = nil,
          services: Set<PlanetService> = []) {
+        self.id              = id
         self.kind            = kind
         self.displayName     = displayName
         self.typeDescription = typeDescription

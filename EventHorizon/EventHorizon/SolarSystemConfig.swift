@@ -1,28 +1,27 @@
 import Foundation
+import CoreGraphics
 
 /// JSON-driven description of one playable solar system.
 ///
-/// Stored as a `.json` file in the `systems/` subfolder of the bundle. Loaded
-/// at scene init; nothing in here is mutated at runtime.
+/// Bodies define their orbital relationships, not their absolute positions.
+/// `location` is either a fixed point (`{"x": …, "y": …}`) or the ID of
+/// another body (a string). `orbit` is the radial distance from that center.
+/// The combination forms a tree of bodies whose absolute positions are
+/// resolved at runtime by `OrbitalSolver` from the current Unix time — so
+/// every client on the same wall-clock sees the same positions.
 struct SolarSystemConfig: Decodable {
 
     let name: String
 
-    /// HDR image file (without extension) inside
-    /// `Art.scnassets/celestial_bodies/textures/`. Applied as the
-    /// `lightingEnvironment` of every celestial body's internal SCN scene so
-    /// PBR materials render with realistic ambient + reflections.
+    /// HDR image basename (without extension) inside
+    /// `Art.scnassets/celestial_bodies/textures/`.
     let lightingEnvironment: String?
 
-    let suns:     [SunConfig]
-    let planets:  [PlanetConfig]
+    let suns:      [SunConfig]
+    let planets:   [PlanetConfig]
     let asteroids: AsteroidConfig
 
     static func load(name: String) -> SolarSystemConfig? {
-        // Xcode's synchronized group flattens loose resource folders to the
-        // bundle root, so we look there. The on-disk file may live in
-        // `EventHorizon/systems/` for source organization; only the bundle
-        // path matters at runtime.
         guard let url = Bundle.main.url(forResource: name, withExtension: "json")
         else {
             print("[SolarSystemConfig] missing \(name).json in bundle")
@@ -38,52 +37,83 @@ struct SolarSystemConfig: Decodable {
     }
 }
 
+// MARK: – Orbital target
+
+/// Where a body's orbit is centered. Either a literal `(x, y)` point in
+/// world coordinates or the ID of another body it follows.
+///
+/// JSON shapes:
+///   • `"location": {"x": 0, "y": 0}` → `.fixed`
+///   • `"location": "sol"`            → `.body("sol")`
+enum OrbitTarget {
+    case fixed(x: Float, y: Float)
+    case body(id: String)
+}
+
+extension OrbitTarget: Decodable {
+    init(from decoder: Decoder) throws {
+        // String form first (it's the most permissive single-value).
+        if let single = try? decoder.singleValueContainer(),
+           let str   = try? single.decode(String.self) {
+            self = .body(id: str)
+            return
+        }
+        // Object form `{x, y}`.
+        if let keyed = try? decoder.container(keyedBy: PointKeys.self),
+           let x     = try? keyed.decode(Float.self, forKey: .x),
+           let y     = try? keyed.decode(Float.self, forKey: .y) {
+            self = .fixed(x: x, y: y)
+            return
+        }
+        throw DecodingError.dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "location must be a string body-ID or an {x,y} object"
+            )
+        )
+    }
+
+    private enum PointKeys: String, CodingKey { case x, y }
+}
+
+// MARK: – Body configs
+
 struct SunConfig: Decodable {
-    /// PNG basename in `Art.scnassets/celestial_bodies/` (no extension).
+    /// Unique slug used by other bodies to reference this one as their
+    /// orbital center. Also surfaces as the `CelestialBodyNode.id`.
+    let id: String
     let sprite: String
-    /// World position.
-    let x: Float
-    let y: Float
-    /// Visual radius in world units (the rendered sprite is `radius * 2` across).
-    let radius: Float
-    /// Optional human-readable name shown in the selection tooltip.
     let displayName: String?
+    let radius: Float
+
+    /// What this body orbits around.
+    let location: OrbitTarget
+    /// Radial distance from `location`. Zero = static at center.
+    let orbit: Float
+    /// Orbital period in seconds. Optional; nil → derived by `OrbitalSolver`.
+    let period: Float?
 }
 
 struct PlanetConfig: Decodable {
-    /// PNG basename in `Art.scnassets/celestial_bodies/` (no extension).
+    let id: String
     let sprite: String
-
-    /// Reference point — typically a sun's position. The planet is placed at
-    /// `orbitDistance` away from this point, at a random angle picked when
-    /// the system is built.
-    let centerX: Float
-    let centerY: Float
-    let orbitDistance: Float
-
-    /// Visual radius in world units.
+    let displayName: String?
     let radius: Float
 
-    /// Optional human-readable name shown in the selection tooltip.
-    let displayName: String?
+    let location: OrbitTarget
+    let orbit: Float
+    let period: Float?
 
     /// Services this planet offers in the docked view. Each string must be
-    /// the raw value of a `PlanetService` case (`bar`, `trade`, `shipyard`,
-    /// `outfitter`, `bank`). Omit the field entirely to grant all services.
+    /// the raw value of a `PlanetService` case. Omit to grant all services.
     let services: [String]?
 }
 
 struct AsteroidConfig: Decodable {
-    /// Total number of asteroid sprites scattered across the map.
     let count: Int
-    /// Distributed uniformly within `[-spreadRadius, +spreadRadius]` on both
-    /// axes (square region, not radial).
     let spreadRadius: Float
-    /// Visual radius range per instance.
     let minRadius: Float
     let maxRadius: Float
-    /// Spin period range, seconds per full rotation. Direction is randomized
-    /// per instance.
     let minSpinPeriod: Float
     let maxSpinPeriod: Float
 }

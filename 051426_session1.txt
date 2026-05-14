@@ -1,0 +1,76 @@
+EventHorizon — Session Summary
+Project overview
+iOS multiplayer space game, Endless Sky-style clone. SpriteKit + SceneKit (SK3DNode) hybrid. Server-authoritative networking at 20 Hz over plain WebSocket (ws on port 2568). Swift 6 with SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor.
+
+Working dir: /Users/master/EventHorizon (git initialized, not GitHub-connected).
+Target: iOS Simulator, iPhone 17 Pro (iOS 26.5). Test command:
+
+cd /Users/master/EventHorizon/EventHorizon && xcodebuild -project EventHorizon.xcodeproj -scheme EventHorizon -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build 2>&1 | grep -E '(error:|warning:|BUILD)' | tail -15
+Architecture — files that matter
+Scenes (SpriteKit):
+
+LoadingScene.swift — title screen, mode toggle (single/multi), Join button
+GameScene.swift — main flight scene. Camera follows shipNodes[mySessionId].position. Drives solarSystem?.tick(at: Date().timeIntervalSince1970) every frame.
+PlanetScene.swift — docked view. Landscape image, menu buttons filtered by info.services, shipyard panel, disembark.
+Visuals:
+
+ShipNode.swift — SK3DNode for USDC ships, SKSpriteNode for PNG ships. Carries heading, velocityMagnitude, maxHull/maxShields/maxFuel. PNG ships have an SKShader for sun-direction shadow (uses SKAttribute "a_lightDir" updated per frame, NOT SKUniform — that was unreliable). Bank animation removed per user.
+ShipMetadata.swift — rendering descriptor. .arclight (USDC) and .ringship (PNG). byID: [String: ShipMetadata] keyed by slug.
+CelestialBodyNode.swift — has id, kind, displayName, bodyRadius, spriteName, services: Set<PlanetService>. Holds the green four-cornered selection bracket.
+StarAtlas.swift / StarField.swift / NebulaAtlas.swift — procedural starfield + nebulae. Stars use format.scale = 4 (or 6 for hero bloom). Diffraction spikes rendered as scaled radial gradients (NOT clipped rectangles, those pixelated). Nebula puffs scattered with triangular distribution, no wisp tier (was creating tile-line artifacts).
+Data layer (this session's big addition):
+
+ShipData.swift — ShipDef Codable + ShipRegistry singleton. Walks every *.json in Bundle.main, try-decodes as ShipDef, indexes by file basename. JSON keys with spaces use explicit CodingKeys.
+OutfitData.swift — OutfitDef + OutfitRegistry. Same pattern. Currently only resolves "Heavy Laser Turret"; ships reference outfits not yet defined elsewhere.
+OrbitalSolver.swift — pure function position(of: bodyID, in: config, at: Date().timeIntervalSince1970). Walks the orbit chain recursively with cycle detection. Default period = 600 * sqrt(radius/1000) seconds.
+SolarSystemConfig.swift — new schema: bodies have id, location: OrbitTarget (either {x,y} or string body-ID), orbit: Float distance, optional period.
+SolarSystem.swift — install(into:) sets up bodies; tick(at:) recomputes positions from OrbitalSolver every frame. nodesByID indexes orbital bodies (suns/planets); asteroids are scattered statically.
+PlayerProfile.swift — singleton, holds currentShipID: String (the slug). Computed currentShip: ShipMetadata, currentShipDef: ShipDef?, availableShips: [(id, metadata)].
+HUD:
+
+MiniMap.swift — top-right radar under HUD bars. White ring = sun, green ring = planet, red dot = other ships, wedge = own heading.
+InfoTooltip.swift — top-left info panel. Dock button activates when close (≤ 1.6× planet radius) and slow (≤ 55 u/s).
+HUD has three bars now: SHIELDS, HULL, FUEL (amber). Max values pulled from PlayerProfile.shared.currentShipDef.attributes displayed in key labels. Wire format stays 0–100 percent.
+Sim/Networking:
+
+OfflineSim.swift — single-player physics. Constants mirror server. Angle normalized to (−π, π] each tick.
+NetworkManager.swift — WebSocket client. Server is in server/ (Node.js, Colyseus + custom ws-based RawGameServer.ts).
+Assets and conventions
+Canonical slug = JSON basename = asset basename = ShipMetadata.byID key. Don't introduce a separate "sprite path" — use assetName consistently.
+
+Art.scnassets/ships/arclight.usdc (renamed from spaceship1.usdc, textures Image_0/1/2.jpg + color_0C0C0C.exr stay alongside)
+Art.scnassets/ships/ringship.png
+Art.scnassets/celestial_bodies/yellow_sun.png, rock_planet.png, Sun.usdz, Various_Planets.usdz, asteroids.usdz, textures/HDR_multi_nebulae.hdr
+data/ships/arclight.json, data/ships/ringship.json
+data/outfits/weapons.json
+data/systems/home_system.json
+Xcode flattens loose resource folders to bundle root. data/ and systems/ directories aren't preserved at runtime — every *.json ends up at EventHorizon.app/<basename>.json. Bundle.main.url(forResource: name, withExtension: "json") (no subdirectory) finds them. The registries scan everything via Bundle.main.urls(forResourcesWithExtension:subdirectory: nil) and let try? JSONDecoder.decode reject non-matching files silently.
+
+.scnassets folders ARE preserved as folder structure (special handling).
+
+Critical gotchas that bit us
+SKShader per-node uniforms via SKUniform.vectorFloat2Value don't propagate reliably. Use SKAttribute + sprite.setValue(SKAttributeValue, forAttribute:).
+SK3DNode doesn't always respect parent zRotation in 2D space. For ship heading on USDC ships, rotate headingNode.eulerAngles.z inside the SCN scene, not body.zRotation in SpriteKit.
+SK3DNode can also misbehave with sibling zPosition — celestial bodies were converted from SK3DNode to SKSpriteNode + procedural radial-gradient glow textures (NOT SKShapeNode(circleOfRadius:), which renders as a hard disc).
+SKNode.speed is already a property (action playback rate). The ship's velocity magnitude is named velocityMagnitude.
+SKShapeNode(circleOfRadius:) for glows looks like a transparent disc. Use a baked SKTexture with multi-stop radial gradient.
+JSON description field in ship configs is sometimes a string, sometimes an array — ShipDef doesn't decode it; OutfitDef handles both via custom init.
+Default JSONDecoder rejects trailing commas. The home_system.json had one — flagged and fixed.
+Active known issues / not-yet-wired
+Multiplayer ship-swap doesn't propagate. Server has no per-player ship-type message. Remote ships always render as ringship.
+Multiplayer dock/undock doesn't propagate either. PlanetScene → new GameScene reconnects to the server as a fresh player.
+Credits aren't enforced — purchaseShip doesn't deduct.
+Fuel doesn't deplete — bar pinned at 100%.
+Most outfits referenced in ship JSONs aren't defined (Energy Blaster, Hyperdrive, etc.). Only Heavy Laser Turret is in weapons.json. OutfitRegistry.missingOutfits([...]) lists missing names.
+Bodies orbit with phase=0 — multiple bodies on the same orbit overlap. Add optional phase to config when needed.
+Clock skew in multiplayer — orbital positions use Date().timeIntervalSince1970 directly; no server-time sync.
+Re-dock cooldown not implemented. Disembarking at the planet's exact position immediately re-arms the dock button.
+User's preferences (observed)
+Wants concise answers, no narration of internal deliberation
+Asks clarifying questions to be asked when intent is ambiguous (e.g. typo file names, schema choices)
+Likes architectural rationale ("why this not that") next to implementations
+Prefers procedural assets over PNGs where the procedural is genuinely a fit (stars), real images where they're better (nebulae could be NASA images, planets are user-provided PNGs now)
+Wants flat file organization, not nested module folders
+Last few sessions: data-driven everything via JSON in data/ subfolders
+Last thing committed in this session
+JSON schema migrated to location + orbit (point or body-ID reference) with time-based orbital motion via OrbitalSolver. home_system.json updated. Disembark spawns at planet's live position via the solver

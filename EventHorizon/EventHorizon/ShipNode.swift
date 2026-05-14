@@ -33,6 +33,13 @@ final class ShipNode: SKNode {
     /// playback rate.)
     private(set) var velocityMagnitude: CGFloat = 0
 
+    /// Maximum values for the ship's three resource bars, pulled from the
+    /// JSON gameplay definition (`data/ships/<id>.json`) at construction.
+    /// Defaults are placeholders for hulls that don't have a JSON entry.
+    let maxHull:    CGFloat
+    let maxShields: CGFloat
+    let maxFuel:    CGFloat
+
     init(isLocalPlayer: Bool, metadata: ShipMetadata? = nil) {
         // Local player flies whichever hull they last purchased at the
         // shipyard; remote ships fall back to the default until we have a
@@ -40,6 +47,16 @@ final class ShipNode: SKNode {
         self.isLocalPlayer = isLocalPlayer
         self.metadata      = metadata
             ?? (isLocalPlayer ? PlayerProfile.shared.currentShip : .ringship)
+
+        // Pull gameplay attributes from the JSON-loaded definition. The
+        // lookup ID matches the metadata's asset basename so the rendering
+        // and gameplay layers stay in sync without a separate mapping.
+        let shipID = self.metadata.assetName
+        let def    = ShipRegistry.shared.def(for: shipID)
+        self.maxHull    = CGFloat(def?.attributes.hull         ?? 100)
+        self.maxShields = CGFloat(def?.attributes.shields      ?? 100)
+        self.maxFuel    = CGFloat(def?.attributes.fuelCapacity ?? 100)
+
         super.init()
 
         if let mount = self.metadata.thrustMounts.first {
@@ -463,6 +480,115 @@ final class ShipNode: SKNode {
             }
         }
         return m
+    }
+
+    // Internal so ShipyardScene can call it without duplicating the USDC path.
+    static func rotationMappingInternal(forward: SCNVector3, up: SCNVector3,
+                                        targetForward: SCNVector3, targetUp: SCNVector3) -> SCNVector4 {
+        rotationMapping(forward: forward, up: up,
+                        targetForward: targetForward, targetUp: targetUp)
+    }
+
+    // MARK: – Static thumbnail (used by ShipyardScene)
+
+    /// Returns a static, non-animated visual node sized to `viewportSize`.
+    /// PNG ships → plain SKSpriteNode. USDC ships → SK3DNode with basic lighting.
+    static func staticThumbnail(metadata: ShipMetadata, viewportSize: CGSize) -> SKNode {
+        switch metadata.assetKind {
+        case .png:
+            if let url = Bundle.main.url(forResource: metadata.assetName,
+                                         withExtension: "png",
+                                         subdirectory: metadata.assetSubdirectory),
+               let image = UIImage(contentsOfFile: url.path) {
+                let sprite = SKSpriteNode(texture: SKTexture(image: image))
+                sprite.size = viewportSize
+                return sprite
+            }
+        case .usdc:
+            if let node3D = makeStaticUSDC(metadata: metadata, viewportSize: viewportSize) {
+                return node3D
+            }
+        }
+        let fallback = SKShapeNode(rectOf: viewportSize, cornerRadius: 4)
+        fallback.fillColor   = UIColor(white: 0.08, alpha: 1)
+        fallback.strokeColor = UIColor(white: 0.30, alpha: 0.5)
+        return fallback
+    }
+
+    private static func makeStaticUSDC(metadata: ShipMetadata, viewportSize: CGSize) -> SK3DNode? {
+        guard let url = Bundle.main.url(forResource: metadata.assetName,
+                                        withExtension: "usdc",
+                                        subdirectory: metadata.assetSubdirectory)
+        else { return nil }
+
+        let options: [SCNSceneSource.LoadingOption: Any] = [
+            .checkConsistency:   false,
+            .assetDirectoryURLs: [url.deletingLastPathComponent()],
+        ]
+        guard let scene = try? SCNScene(url: url, options: options) else { return nil }
+
+        let diffuseURL   = url.deletingLastPathComponent().appendingPathComponent("Image_0.jpg")
+        let diffuseImage = UIImage(contentsOfFile: diffuseURL.path)
+        scene.rootNode.enumerateChildNodes { node, _ in
+            node.geometry?.materials.forEach { mat in
+                mat.lightingModel = .blinn
+                if !(mat.diffuse.contents is UIImage), let img = diffuseImage {
+                    mat.diffuse.contents = img
+                }
+                mat.isDoubleSided = true
+            }
+        }
+
+        let center = SCNNode()
+        for child in scene.rootNode.childNodes { center.addChildNode(child) }
+        let (minBB, maxBB) = center.boundingBox
+        center.position = SCNVector3(-(minBB.x + maxBB.x) * 0.5,
+                                     -(minBB.y + maxBB.y) * 0.5,
+                                     -(minBB.z + maxBB.z) * 0.5)
+
+        let orient = SCNNode()
+        orient.addChildNode(center)
+        orient.rotation = rotationMapping(forward: metadata.forwardAxis.vector,
+                                          up:      metadata.upAxis.vector,
+                                          targetForward: SCNVector3(0, 1, 0),
+                                          targetUp:      SCNVector3(0, 0, 1))
+
+        let root = SCNNode()
+        root.addChildNode(orient)
+        let extent = max(maxBB.x - minBB.x, max(maxBB.y - minBB.y, maxBB.z - minBB.z))
+        if extent > 0 { let s = 1.0 / Float(extent); root.scale = SCNVector3(s, s, s) }
+        scene.rootNode.addChildNode(root)
+
+        let cam = SCNCamera()
+        cam.usesOrthographicProjection = true
+        cam.orthographicScale = metadata.orthographicScale
+        cam.zNear = 0.01; cam.zFar = 50
+        let camNode = SCNNode()
+        camNode.camera = cam
+        camNode.position = SCNVector3(0, 0, 4)
+        camNode.look(at: SCNVector3(0, 0, 0), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 0, -1))
+        scene.rootNode.addChildNode(camNode)
+        scene.background.contents = nil
+
+        func light(_ intensity: Float, _ color: UIColor, from pos: SCNVector3) -> SCNNode {
+            let n = SCNNode(); n.light = SCNLight()
+            n.light!.type = .directional; n.light!.intensity = CGFloat(intensity); n.light!.color = color
+            n.position = pos
+            n.look(at: SCNVector3(0, 0, 0), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 0, -1))
+            return n
+        }
+        scene.rootNode.addChildNode(light(450, .white,
+                                          from: SCNVector3(3, 4, 8)))
+        scene.rootNode.addChildNode(light(220, UIColor(red: 0.55, green: 0.85, blue: 1, alpha: 1),
+                                          from: SCNVector3(-3, -4, 6)))
+        let ambient = SCNNode(); ambient.light = SCNLight()
+        ambient.light!.type = .ambient; ambient.light!.intensity = 130
+        scene.rootNode.addChildNode(ambient)
+
+        let node3D = SK3DNode(viewportSize: viewportSize)
+        node3D.scnScene = scene
+        node3D.pointOfView = camNode
+        return node3D
     }
 
     private static func rotationVectorFromMatrix(_ m: [[Float]]) -> SCNVector4 {

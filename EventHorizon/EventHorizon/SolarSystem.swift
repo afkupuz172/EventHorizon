@@ -13,10 +13,11 @@ final class SolarSystem {
 
     let config: SolarSystemConfig
 
-    /// World position of the first sun in the config. `GameScene` reads this
-    /// to point each ship's directional light at the actual star.
+    /// World position of the first sun at install time. Re-resolved each
+    /// frame from `OrbitalSolver` so it tracks the sun if the sun moves.
     var primarySunPosition: CGPoint? {
-        config.suns.first.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) }
+        guard let id = config.suns.first?.id else { return nil }
+        return nodesByID[id]?.position
     }
 
     /// All celestial bodies after `install(...)` — used by the HUD for
@@ -25,6 +26,11 @@ final class SolarSystem {
 
     var sunPositions:    [CGPoint] { bodies.filter { $0.kind == .sun    }.map(\.position) }
     var planetPositions: [CGPoint] { bodies.filter { $0.kind == .planet }.map(\.position) }
+
+    /// Orbital nodes indexed by their JSON ID. `tick(at:)` recomputes each
+    /// one's position from the orbital solver. Asteroids are NOT in this
+    /// map — they stay where they were scattered.
+    private var nodesByID: [String: CelestialBodyNode] = [:]
 
     /// Cached PNG textures keyed by the sprite basename used in the JSON
     /// config. Loaded lazily on first reference.
@@ -41,6 +47,20 @@ final class SolarSystem {
         installSuns(into:    layer)
         installPlanets(into: layer)
         installAsteroids(into: layer)
+        // Snap to t=now positions so the first frame is already correct
+        // (otherwise bodies briefly show at (0,0) before the first tick).
+        tick(at: Date().timeIntervalSince1970)
+    }
+
+    /// Per-frame update — recomputes orbital body positions from the given
+    /// absolute time (`Date().timeIntervalSince1970`). Asteroids and other
+    /// non-orbital bodies are left alone.
+    func tick(at time: TimeInterval) {
+        for (id, node) in nodesByID {
+            if let pos = OrbitalSolver.position(of: id, in: config, at: time) {
+                node.position = pos
+            }
+        }
     }
 
     // MARK: – Suns
@@ -48,21 +68,25 @@ final class SolarSystem {
     private func installSuns(into layer: SKNode) {
         for (i, sunCfg) in config.suns.enumerated() {
             let body = makeSunBody(
+                id:          sunCfg.id,
                 sprite:      sunCfg.sprite,
                 radius:      CGFloat(sunCfg.radius),
                 displayName: sunCfg.displayName ?? "Star \(i + 1)"
             )
-            body.position  = CGPoint(x: CGFloat(sunCfg.x), y: CGFloat(sunCfg.y))
             body.zPosition = 0
+            // Initial position resolved by the solver below in `tick(at:)`.
             layer.addChild(body)
             bodies.append(body)
+            nodesByID[sunCfg.id] = body
         }
     }
 
-    private func makeSunBody(sprite: String,
+    private func makeSunBody(id: String,
+                             sprite: String,
                              radius: CGFloat,
                              displayName: String) -> CelestialBodyNode {
-        let body = CelestialBodyNode(kind:            .sun,
+        let body = CelestialBodyNode(id:              id,
+                                     kind:            .sun,
                                      displayName:    displayName,
                                      typeDescription: "Stellar mass",
                                      radius:          radius,
@@ -98,20 +122,16 @@ final class SolarSystem {
 
     private func installPlanets(into layer: SKNode) {
         for (i, p) in config.planets.enumerated() {
-            let angle    = CGFloat.random(in: 0...(2 * .pi))
-            let position = CGPoint(
-                x: CGFloat(p.centerX) + cos(angle) * CGFloat(p.orbitDistance),
-                y: CGFloat(p.centerY) + sin(angle) * CGFloat(p.orbitDistance)
-            )
             guard let body = makePlanetBody(
                 config: p,
                 displayName: p.displayName ?? "Planet \(i + 1)"
             )
             else { continue }
-            body.position  = position
             body.zPosition = 1
+            // Position set by tick(at:) below; no manual placement.
             layer.addChild(body)
             bodies.append(body)
+            nodesByID[p.id] = body
         }
     }
 
@@ -131,6 +151,7 @@ final class SolarSystem {
         }
 
         let body = CelestialBodyNode(
+            id:              config.id,
             kind:            .planet,
             displayName:    displayName,
             typeDescription: prettyTypeDescription(from: config.sprite),
@@ -202,7 +223,11 @@ final class SolarSystem {
             guard let texture = asteroidTextures.randomElement() else { continue }
             asteroidCounter += 1
             let diameter = CGFloat.random(in: CGFloat(cfg.minRadius)...CGFloat(cfg.maxRadius)) * 2
+            // Asteroids aren't orbital — they're scattered. Use a synthetic
+            // ID so `CelestialBodyNode.id` is still meaningful (e.g. for
+            // tap-to-select diagnostics), but don't register in `nodesByID`.
             let body = CelestialBodyNode(
+                id:              "asteroid_\(asteroidCounter)",
                 kind:            .asteroid,
                 displayName:    "Asteroid \(asteroidCounter)",
                 typeDescription: "Rocky debris",

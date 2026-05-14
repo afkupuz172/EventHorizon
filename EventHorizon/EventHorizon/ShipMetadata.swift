@@ -65,12 +65,12 @@ struct ShipMetadata {
 
 extension ShipMetadata {
 
-    /// 3D USDC ship — the original. Kept around as an example of the
-    /// SK3DNode path and as a fallback if you want full 3D lean/lighting.
-    static let spaceship1 = ShipMetadata(
-        displayName:      "Spaceship-1",
+    /// 3D USDC ship. Renderer reads this; gameplay stats (hull, shields,
+    /// fuel, outfits) come from `data/ships/arclight.json` via `ShipRegistry`.
+    static let arclight = ShipMetadata(
+        displayName:      "Arclight",
         assetKind:        .usdc,
-        assetName:        "spaceship1",
+        assetName:        "arclight",
         assetSubdirectory: "Art.scnassets/ships",
         // First guess gave "nose down, on its side": model's true nose appears
         // to be -X (not +X), and its true top is +Z (not +Y, hence the roll).
@@ -90,7 +90,7 @@ extension ShipMetadata {
     /// 2D ringship — the current default. The artwork is expected to point
     /// nose-up (top of the PNG). No 3D orientation, no lean.
     static let ringship = ShipMetadata(
-        displayName:      "Ringship",
+        displayName:      "RingShip",
         assetKind:        .png,
         assetName:        "ringship",
         assetSubdirectory: "Art.scnassets/ships",
@@ -106,4 +106,13 @@ extension ShipMetadata {
         viewportSize:     CGSize(width: 110, height: 110),
         orthographicScale: 0.6
     )
+
+    /// Lookup by ID slug (must match the `data/ships/<id>.json` basename and
+    /// the `Art.scnassets/ships/<id>.{usdc,png}` asset name). When a new
+    /// ship JSON drops in, give it a Swift `ShipMetadata` here and add the
+    /// pairing — registry-driven lookups stay automatic.
+    static let byID: [String: ShipMetadata] = [
+        "arclight": .arclight,
+        "ringship": .ringship,
+    ]
 }

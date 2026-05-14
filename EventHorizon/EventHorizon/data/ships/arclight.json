@@ -1,7 +1,7 @@
 {
-  "ship": "Arcligh",
-  "sprite": "ship/spacship1",
-  "thumbnail": "thumbnail/spacship1",
+  "ship": "Arclight",
+  "sprite": "ship/arclight",
+  "thumbnail": "thumbnail/arclight",
   "attributes": {
     "category": "Interceptor",
     "cost": 520000,

@@ -34,6 +34,8 @@ final class GameScene: SKScene {
     private var shieldFill:      SKShapeNode!
     private var hullBar:         SKShapeNode!
     private var hullFill:        SKShapeNode!
+    private var fuelBar:         SKShapeNode!
+    private var fuelFill:        SKShapeNode!
     private let hudBarWidth:     CGFloat = 140
 
     // ── Zoom ───────────────────────────────────────────────────────────────────
@@ -42,8 +44,14 @@ final class GameScene: SKScene {
     private let zoomMax: CGFloat = 3.0
 
     // ── Solar system context ───────────────────────────────────────────────────
-    private var solarSystem:        SolarSystem?
-    private var primarySunPosition: CGPoint = .zero
+    private var solarSystem: SolarSystem?
+
+    /// Live position of the system's primary sun — recomputed each access so
+    /// it tracks the sun if it happens to orbit. Used to point the ship's
+    /// lighting/shadow shader at the actual star.
+    private var primarySunPosition: CGPoint {
+        solarSystem?.primarySunPosition ?? .zero
+    }
 
     // ── Selection / tooltip / mini-map ─────────────────────────────────────────
     private var miniMap:        MiniMap!
@@ -337,8 +345,7 @@ final class GameScene: SKScene {
         // game always loads "home_system".
         guard let system = SolarSystem(name: "home_system") else { return }
         system.install(into: localObjectsLayer)
-        primarySunPosition = system.primarySunPosition ?? .zero
-        solarSystem        = system
+        solarSystem = system
 
         // Seed the mini-map with the static body positions. Dynamic ship
         // positions are pushed in every frame.
@@ -373,8 +380,11 @@ final class GameScene: SKScene {
 
         // Mini-map under the health bars, top-right corner.
         miniMap = MiniMap(radius: 62)
+        // Drop the mini-map further below the readout panel — it has three
+        // bars now (shield / hull / fuel) instead of two, so we need ~18 pt
+        // more vertical clearance.
         miniMap.position = CGPoint(x: hw - 18 - miniMap.radius,
-                                   y: hh - 24 - 32 - miniMap.radius)
+                                   y: hh - 24 - 50 - miniMap.radius)
         cameraNode.addChild(miniMap)
         if let system = solarSystem {
             miniMap.configure(suns:    system.sunPositions,
@@ -416,44 +426,59 @@ final class GameScene: SKScene {
             return track
         }
 
-        // Shields row (y = 0)
-        panel.addChild(key("SHIELDS", y: 0))
-        let shieldTrack = barTrack(y: 0)
-        panel.addChild(shieldTrack)
+        // Helper to spin up one of the three resource rows (track + fill +
+        // key label). The fill is wrapped in a container so `xScale` shrinks
+        // it from the right (track edge) instead of the centre.
+        func makeRow(y: CGFloat, color: UIColor, label: String) -> (track: SKShapeNode, fill: SKShapeNode) {
+            panel.addChild(key(label, y: y))
+            let track = barTrack(y: y)
+            panel.addChild(track)
 
-        let shieldFillContainer  = SKNode()
-        shieldFillContainer.position = CGPoint(x: -hudBarWidth, y: 0)
-        let shieldFillRect        = SKShapeNode(rect: CGRect(x: 0, y: -3,
-                                                             width: hudBarWidth, height: 6),
-                                                cornerRadius: 1.5)
-        shieldFillRect.fillColor   = UIColor(red: 0.30, green: 0.65, blue: 1.0, alpha: 0.95)
-        shieldFillRect.strokeColor = .clear
-        shieldFillContainer.addChild(shieldFillRect)
-        panel.addChild(shieldFillContainer)
-        shieldFill = shieldFillRect
-        shieldBar  = shieldTrack
+            let container       = SKNode()
+            container.position  = CGPoint(x: -hudBarWidth, y: y)
+            let fill            = SKShapeNode(
+                rect: CGRect(x: 0, y: -3, width: hudBarWidth, height: 6),
+                cornerRadius: 1.5
+            )
+            fill.fillColor      = color
+            fill.strokeColor    = .clear
+            container.addChild(fill)
+            panel.addChild(container)
+            return (track, fill)
+        }
 
-        // Hull row (y = -18)
-        panel.addChild(key("HULL", y: -18))
-        let hullTrack = barTrack(y: -18)
-        panel.addChild(hullTrack)
+        // Resolve the player's max values from the loaded ship definition so
+        // the key labels read "SHIELDS 2200" / "HULL 500" / "FUEL 400" for
+        // the current ship. Defaults match the 0-100 placeholders if the
+        // JSON didn't load.
+        let def       = PlayerProfile.shared.currentShipDef
+        let maxShield = Int(def?.attributes.shields      ?? 100)
+        let maxHull   = Int(def?.attributes.hull         ?? 100)
+        let maxFuel   = Int(def?.attributes.fuelCapacity ?? 100)
 
-        let hullFillContainer = SKNode()
-        hullFillContainer.position = CGPoint(x: -hudBarWidth, y: -18)
-        let hullFillRect      = SKShapeNode(rect: CGRect(x: 0, y: -3,
-                                                         width: hudBarWidth, height: 6),
-                                            cornerRadius: 1.5)
-        hullFillRect.fillColor   = UIColor(red: 1.0, green: 0.30, blue: 0.30, alpha: 0.95)
-        hullFillRect.strokeColor = .clear
-        hullFillContainer.addChild(hullFillRect)
-        panel.addChild(hullFillContainer)
-        hullFill = hullFillRect
-        hullBar  = hullTrack
+        let shieldRow = makeRow(y:   0, color: UIColor(red: 0.30, green: 0.65, blue: 1.00, alpha: 0.95),
+                                label: "SHIELDS \(maxShield)")
+        shieldBar = shieldRow.track
+        shieldFill = shieldRow.fill
+
+        let hullRow = makeRow(y: -18, color: UIColor(red: 1.00, green: 0.30, blue: 0.30, alpha: 0.95),
+                              label: "HULL \(maxHull)")
+        hullBar = hullRow.track
+        hullFill = hullRow.fill
+
+        // Fuel row — amber, sits directly under hull. Fuel doesn't deplete
+        // yet (no consumption mechanics); the bar is initialised at 100%
+        // and `setStatus` accepts a fuel percent for future use.
+        let fuelRow = makeRow(y: -36, color: UIColor(red: 1.00, green: 0.65, blue: 0.20, alpha: 0.95),
+                              label: "FUEL \(maxFuel)")
+        fuelBar = fuelRow.track
+        fuelFill = fuelRow.fill
     }
 
-    private func setStatus(shieldsPct: CGFloat, hullPct: CGFloat) {
+    private func setStatus(shieldsPct: CGFloat, hullPct: CGFloat, fuelPct: CGFloat = 1.0) {
         shieldFill?.xScale = max(0.001, min(1, shieldsPct))
         hullFill?.xScale   = max(0.001, min(1, hullPct))
+        fuelFill?.xScale   = max(0.001, min(1, fuelPct))
     }
 
     // MARK: – Game loop
@@ -482,6 +507,12 @@ final class GameScene: SKScene {
         // (= closest). So far stars get a factor near 1, the closer-feeling
         // nebula gets a small factor, and `localObjectsLayer` (factor 0,
         // unmoved) is the actual playfield.
+        // Orbital motion of suns/planets — driven by absolute wall-clock so
+        // every client computes the same positions regardless of when they
+        // joined. Pure function, so cheap to call every frame even with
+        // many bodies.
+        solarSystem?.tick(at: Date().timeIntervalSince1970)
+
         // Camera follows the local ship NODE rather than the latest snapshot
         // position. The node's position is what's actually animated during
         // dock (shrink-into-planet) and disembark (rise-from-planet), so
@@ -620,6 +651,7 @@ final class GameScene: SKScene {
         // finishes, the selection might have been cleared or the node
         // removed by other game logic.
         let info = DockedPlanetInfo(
+            bodyID:          body.id,
             displayName:    body.displayName,
             typeDescription: body.typeDescription,
             spriteName:      body.spriteName,

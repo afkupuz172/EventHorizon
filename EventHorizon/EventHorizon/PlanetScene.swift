@@ -3,16 +3,18 @@ import UIKit
 
 /// Information passed from `GameScene` to `PlanetScene` when the player docks.
 struct DockedPlanetInfo {
+    /// JSON body ID. Used by `disembark()` to look up the planet's CURRENT
+    /// orbital position via `OrbitalSolver` so the ship lifts off from
+    /// wherever the planet actually is right now — important because
+    /// planets keep orbiting while you're parked.
+    let bodyID:          String
     let displayName:     String
     let typeDescription: String
-    /// PNG basename of the planet sprite (e.g. "rock_planet"). The scene
-    /// looks for `<basename>_landscape.png` for the docked view and falls
-    /// back to a procedural landscape if not found.
+    /// PNG basename of the planet sprite (e.g. "rock_planet").
     let spriteName:      String?
     let radius:          CGFloat
-    /// World position the ship docked at. On disembark the new `GameScene`
-    /// spawns the ship just outside this body's radius and runs the rise
-    /// animation FROM this point.
+    /// World position at the moment of docking. Used only as a fallback if
+    /// the orbital re-resolution fails on disembark.
     let worldPosition:   CGPoint
     /// Services available at this planet — drives which menu buttons appear.
     let services:        Set<PlanetService>
@@ -43,17 +45,10 @@ final class PlanetScene: SKScene {
     private let info:     DockedPlanetInfo
     private let gameMode: GameMode
 
-    private var textBoxBg:        SKShapeNode!
-    private var textBoxLabel:     SKLabelNode!
-    /// Container for the shipyard's ship-row UI. Sits over the text box,
-    /// hidden by default; revealed when the player opens SHIP VENDOR.
-    private var shipyardPanel:    SKNode!
+    private var textBoxBg:    SKShapeNode!
+    private var textBoxLabel: SKLabelNode!
 
-    /// Top-level menu buttons (BAR / TRADE / ... / DISEMBARK).
     private var menuButtons: [(node: SKShapeNode, action: () -> Void)] = []
-    /// Buttons inside the shipyard panel. Tracked separately so we can rebuild
-    /// them on each open (state changes after a purchase).
-    private var shipyardButtons: [(node: SKShapeNode, action: () -> Void)] = []
 
     // MARK: – Init
 
@@ -76,7 +71,7 @@ final class PlanetScene: SKScene {
         buildMenu()
         buildTextBox()
 
-        setMode(text: "Welcome to \(info.displayName). Docking clamps engaged. Standard atmospheric pressure.")
+        setMode("Welcome to \(info.displayName). Docking clamps engaged. Standard atmospheric pressure.")
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
@@ -191,126 +186,12 @@ final class PlanetScene: SKScene {
         textBoxLabel.position              = CGPoint(x: -boxWidth / 2 + 15,
                                                      y: boxHeight / 2 - 14)
         textBoxBg.addChild(textBoxLabel)
-
-        shipyardPanel          = SKNode()
-        shipyardPanel.isHidden = true
-        textBoxBg.addChild(shipyardPanel)
     }
 
-    // MARK: – Mode switching (text panel vs. shipyard panel)
+    // MARK: – Mode switching
 
-    private func setMode(text: String? = nil, shipyard: Bool = false) {
-        if let text = text {
-            textBoxLabel.text     = text
-            textBoxLabel.isHidden = false
-        } else {
-            textBoxLabel.isHidden = true
-        }
-        shipyardPanel.isHidden = !shipyard
-        if shipyard {
-            rebuildShipyard()
-        }
-    }
-
-    // MARK: – Shipyard
-
-    /// Tear down and rebuild the shipyard rows. Called every time the panel
-    /// is shown (and after each purchase) so the "CURRENT" badge tracks
-    /// `PlayerProfile.shared.currentShip`.
-    private func rebuildShipyard() {
-        shipyardPanel.removeAllChildren()
-        shipyardButtons.removeAll()
-
-        let boxWidth  = (textBoxBg.path?.boundingBox.width)  ?? size.width - 56
-        let boxHeight = (textBoxBg.path?.boundingBox.height) ?? 100
-
-        // Header line — credits balance + title.
-        let header              = SKLabelNode(
-            text: "SHIPYARD  ·  \(PlayerProfile.shared.credits) CR"
-        )
-        header.fontName         = "AvenirNext-DemiBold"
-        header.fontSize         = 11
-        header.fontColor        = UIColor(white: 0.65, alpha: 1)
-        header.horizontalAlignmentMode = .left
-        header.verticalAlignmentMode   = .top
-        header.position         = CGPoint(x: -boxWidth / 2 + 15,
-                                          y: boxHeight / 2 - 12)
-        shipyardPanel.addChild(header)
-
-        let ships    = PlayerProfile.shared.availableShips
-        let current  = PlayerProfile.shared.currentShip
-        let firstRowY: CGFloat = boxHeight / 2 - 36
-        let rowGap: CGFloat    = 28
-
-        for (i, ship) in ships.enumerated() {
-            let isCurrent = (ship.assetName == current.assetName)
-            let y         = firstRowY - CGFloat(i) * rowGap
-            addShipyardRow(ship: ship, y: y, isCurrent: isCurrent,
-                           boxWidth: boxWidth)
-        }
-    }
-
-    private func addShipyardRow(ship: ShipMetadata,
-                                y: CGFloat,
-                                isCurrent: Bool,
-                                boxWidth: CGFloat) {
-        // Name on the left.
-        let name                       = SKLabelNode(text: ship.displayName)
-        name.fontName                  = "AvenirNext-DemiBold"
-        name.fontSize                  = 13
-        name.fontColor                 = .white
-        name.horizontalAlignmentMode   = .left
-        name.verticalAlignmentMode     = .center
-        name.position                  = CGPoint(x: -boxWidth / 2 + 15, y: y)
-        shipyardPanel.addChild(name)
-
-        // Cost in the center.
-        let cost                       = SKLabelNode(text: "0 cr")
-        cost.fontName                  = "AvenirNextCondensed-Regular"
-        cost.fontSize                  = 12
-        cost.fontColor                 = UIColor(white: 0.65, alpha: 1)
-        cost.horizontalAlignmentMode   = .center
-        cost.verticalAlignmentMode     = .center
-        cost.position                  = CGPoint(x: 0, y: y)
-        shipyardPanel.addChild(cost)
-
-        // Action button on the right. "CURRENT" if it's the active hull
-        // (non-interactive), "BUY" otherwise.
-        let btnW: CGFloat = 90
-        let btnH: CGFloat = 22
-        let btn = SKShapeNode(
-            rect: CGRect(x: -btnW / 2, y: -btnH / 2, width: btnW, height: btnH),
-            cornerRadius: 4
-        )
-        btn.position    = CGPoint(x: boxWidth / 2 - 60, y: y)
-        btn.lineWidth   = 1
-
-        let label                       = SKLabelNode(text: isCurrent ? "CURRENT" : "BUY")
-        label.fontName                  = "AvenirNext-Bold"
-        label.fontSize                  = 10
-        label.verticalAlignmentMode     = .center
-        label.horizontalAlignmentMode   = .center
-        btn.addChild(label)
-
-        if isCurrent {
-            btn.fillColor   = UIColor(white: 0.18, alpha: 0.75)
-            btn.strokeColor = UIColor(white: 0.45, alpha: 0.5)
-            label.fontColor = UIColor(white: 0.65, alpha: 1)
-        } else {
-            btn.fillColor   = UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 0.85)
-            btn.strokeColor = UIColor(red: 0.45, green: 0.80, blue: 1.0, alpha: 1.0)
-            label.fontColor = .white
-            shipyardButtons.append((btn, { [weak self] in
-                self?.purchaseShip(ship)
-            }))
-        }
-        shipyardPanel.addChild(btn)
-    }
-
-    private func purchaseShip(_ ship: ShipMetadata) {
-        // Free for now. When credits are real, deduct here.
-        PlayerProfile.shared.currentShip = ship
-        rebuildShipyard()
+    private func setMode(_ text: String) {
+        textBoxLabel.text = text
     }
 
     // MARK: – Button factory
@@ -347,19 +228,6 @@ final class PlanetScene: SKScene {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
         let scenePoint = touch.location(in: self)
-
-        // Shipyard buttons take priority while the panel is open. Their
-        // positions are in textBoxBg's local frame, so convert there.
-        if !shipyardPanel.isHidden {
-            let panelLocal = touch.location(in: textBoxBg)
-            for (btn, action) in shipyardButtons where btn.contains(panelLocal) {
-                flash(button: btn)
-                action()
-                return
-            }
-        }
-
-        // Main menu / disembark.
         for (btn, action) in menuButtons where btn.contains(scenePoint) {
             flash(button: btn)
             action()
@@ -379,40 +247,50 @@ final class PlanetScene: SKScene {
     // MARK: – Menu actions
 
     private func openBar() {
-        setMode(text: Self.barFlavor.randomElement() ?? "It's quiet here.")
+        setMode(Self.barFlavor.randomElement() ?? "It's quiet here.")
     }
 
     private func openTrade() {
-        setMode(text: "TRADE — Cargo manifest empty. Trade routes are not yet established in this system. Check back when warp lanes are charted.")
+        setMode("TRADE — Cargo manifest empty. Trade routes are not yet established in this system. Check back when warp lanes are charted.")
     }
 
     private func openShipyard() {
-        setMode(shipyard: true)
+        let scene        = ShipyardScene(size: size, info: info, gameMode: gameMode)
+        scene.scaleMode  = .resizeFill
+        view?.presentScene(scene, transition: .fade(withDuration: 0.30))
     }
 
     private func openOutfitter() {
-        setMode(text: "OUTFITTER — On a smoke break. The bell over the door is unattended. A handwritten sign reads: 'BACK IN 10 STANDARD MINUTES'.")
+        let scene        = OutfitterScene(size: size, info: info, gameMode: gameMode)
+        scene.scaleMode  = .resizeFill
+        view?.presentScene(scene, transition: .fade(withDuration: 0.30))
     }
 
     private func openBank() {
-        setMode(text: "BANK — Balance: \(PlayerProfile.shared.credits) credits. Outstanding debts: 0. The teller looks bored. 'Come back when you have business,' he says.")
+        setMode("BANK — Balance: \(PlayerProfile.shared.credits) credits. Outstanding debts: 0. The teller looks bored. 'Come back when you have business,' he says.")
     }
 
     private func disembark() {
-        // Spawn just outside the planet's body radius at a random angle so
-        // the ship drifts back into open space rather than re-overlapping
-        // the planet (which would re-trigger the dock proximity check).
-        let spawnAngle    = CGFloat.random(in: 0...(2 * .pi))
-        let spawnDistance = info.radius + 220
-        let spawnPos      = CGPoint(
-            x: info.worldPosition.x + cos(spawnAngle) * spawnDistance,
-            y: info.worldPosition.y + sin(spawnAngle) * spawnDistance
-        )
+        // Spawn at the planet's CURRENT position. Planets keep orbiting
+        // while the player is docked, so the position captured at dock
+        // time may have drifted by minutes-of-arc. Re-resolve from the
+        // orbital solver using wall-clock time so the take-off point
+        // matches what the player sees in the system view.
+        let now = Date().timeIntervalSince1970
+        let spawnPos: CGPoint
+        if let cfg = SolarSystemConfig.load(name: "home_system"),
+           let resolved = OrbitalSolver.position(of: info.bodyID, in: cfg, at: now) {
+            spawnPos = resolved
+        } else {
+            spawnPos = info.worldPosition
+        }
 
+        // The rise animation starts and ends at the same point — ship grows
+        // out of the planet's exact coordinates.
         let game        = GameScene(size: size,
                                     mode: gameMode,
                                     spawnAt: spawnPos,
-                                    disembarkFrom: info.worldPosition)
+                                    disembarkFrom: spawnPos)
         game.scaleMode  = .resizeFill
         view?.presentScene(game, transition: .fade(withDuration: 0.5))
     }
