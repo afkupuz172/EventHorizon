@@ -19,6 +19,13 @@ struct ProjectileSnapshot {
     let x: Float
     let y: Float
     let ownerId: String
+    /// Name of the outfit/weapon that fired this round. Lets the client
+    /// look up `OutfitRegistry` stats on contact (damage, hit force, blast).
+    /// Optional for backwards compat with old snapshots — `nil` falls back
+    /// to a generic small-arms profile.
+    let weaponName: String?
+    /// `ProjectileKind.standard` | `.flare`. Drives collision categories.
+    let kind: String
 }
 
 struct GameSnapshot {
@@ -200,7 +207,10 @@ final class NetworkManager {
                 guard let x       = (p["x"] as? Double).map({ Float($0) }),
                       let y       = (p["y"] as? Double).map({ Float($0) }),
                       let ownerId = p["ownerId"] as? String else { continue }
-                projs[id] = ProjectileSnapshot(x: x, y: y, ownerId: ownerId)
+                let weapon = p["weapon"] as? String
+                let kind   = (p["kind"] as? String) ?? ProjectileKind.standard
+                projs[id] = ProjectileSnapshot(x: x, y: y, ownerId: ownerId,
+                                               weaponName: weapon, kind: kind)
             }
 
             delegate?.didReceiveSnapshot(GameSnapshot(tick: tick, ships: ships, projectiles: projs),

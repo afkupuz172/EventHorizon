@@ -217,10 +217,7 @@ final class PlanetScene: SKScene {
 
     private func buildMenu() {
         let hw = size.width / 2
-        let buttonSize = CGSize(width: 210, height: 36)
-        let columnX    = hw - 28 - buttonSize.width / 2
-        let topY: CGFloat = 110
-        let gap: CGFloat  = 46
+        let hh = size.height / 2
 
         // Order is fixed; we filter by services so buttons stack tightly.
         let candidates: [(PlanetService, () -> Void)] = [
@@ -231,9 +228,37 @@ final class PlanetScene: SKScene {
             (.bank,      { [weak self] in self?.openBank() }),
         ]
         let available = candidates.filter { info.services.contains($0.0) }
+        guard !available.isEmpty else { return }
+
+        // Fit the column between the title bar and the text box without
+        // overlapping either. Buttons shrink + tighten on short screens.
+        let bandTop:    CGFloat = hh - 80                  // below header
+        let textBoxTop: CGFloat = -hh + 124                // matches buildTextBox()
+        let bandBottom: CGFloat = textBoxTop + 16
+        let bandHeight: CGFloat = max(bandTop - bandBottom, 120)
+
+        let n = CGFloat(available.count)
+        // Solve for buttonH and gap so that n * buttonH + (n-1) * gap ≤ bandHeight
+        // with comfortable proportions. Cap at the cosmetic ideal.
+        let idealH:   CGFloat = 36
+        let idealGap: CGFloat = 10
+        let needed: CGFloat = n * idealH + (n - 1) * idealGap
+        let scale:  CGFloat = needed > bandHeight ? bandHeight / needed : 1
+        let buttonH: CGFloat = idealH * scale
+        let gap:     CGFloat = idealGap * scale
+        let totalH:  CGFloat = n * buttonH + (n - 1) * gap
+
+        let buttonSize = CGSize(width: 210, height: buttonH)
+        let columnX    = hw - 28 - buttonSize.width / 2
+        let topY: CGFloat = bandTop - buttonH / 2  // first row center
+        // Sanity: if the column would still spill below bandBottom, slide it up.
+        let lastY  = topY - CGFloat(available.count - 1) * (buttonH + gap)
+        let underflow = (lastY - buttonH / 2) - bandBottom
+        let yShift: CGFloat = underflow < 0 ? -underflow : 0
+        _ = totalH   // (kept for clarity above; ignore Swift's unused warning)
 
         for (i, entry) in available.enumerated() {
-            let y   = topY - CGFloat(i) * gap
+            let y   = topY - CGFloat(i) * (buttonH + gap) + yShift
             let btn = makeButton(text: entry.0.buttonLabel,
                                  size: buttonSize,
                                  position: CGPoint(x: columnX, y: y),

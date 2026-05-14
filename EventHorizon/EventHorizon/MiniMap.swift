@@ -16,6 +16,10 @@ final class MiniMap: SKNode {
     private let outerRing:    SKShapeNode
     private let crosshair:    SKNode
     private let headingWedge: SKShapeNode
+    /// Outward-pointing arrow that rides the perimeter and steers the
+    /// player toward whatever is currently selected (planet, sun, ship).
+    /// Hidden when nothing is selected.
+    private let selectionWedge: SKShapeNode
 
     private var sunDots:    [SKShapeNode] = []
     private var planetDots: [SKShapeNode] = []
@@ -54,11 +58,26 @@ final class MiniMap: SKNode {
         headingWedge.fillColor   = UIColor(white: 1, alpha: 0.95)
         headingWedge.strokeColor = .clear
 
+        // Selection wedge — slightly larger arrow, drawn so its tip points
+        // along the node's +Y axis. Position+rotation set each update.
+        let selPath = CGMutablePath()
+        selPath.move(to:    CGPoint(x:  0, y:  12))
+        selPath.addLine(to: CGPoint(x: -7, y:  -3))
+        selPath.addLine(to: CGPoint(x:  0, y:   1))
+        selPath.addLine(to: CGPoint(x:  7, y:  -3))
+        selPath.closeSubpath()
+        selectionWedge             = SKShapeNode(path: selPath)
+        selectionWedge.fillColor   = UIColor(red: 1.0, green: 0.85, blue: 0.30, alpha: 1)
+        selectionWedge.strokeColor = UIColor(white: 0, alpha: 0.55)
+        selectionWedge.lineWidth   = 0.5
+        selectionWedge.isHidden    = true
+
         super.init()
         addChild(background)
         addChild(crosshair)
         addChild(outerRing)
         addChild(headingWedge)
+        addChild(selectionWedge)
     }
 
     required init?(coder aDecoder: NSCoder) { fatalError() }
@@ -99,7 +118,8 @@ final class MiniMap: SKNode {
                 playerHeading:  CGFloat,
                 suns:           [CGPoint],
                 planets:        [CGPoint],
-                ships:          [(id: String, position: CGPoint)]) {
+                ships:          [(id: String, position: CGPoint)],
+                selection:      CGPoint? = nil) {
         let scale = radius / worldRadius
 
         for (i, world) in suns.enumerated() where i < sunDots.count {
@@ -138,6 +158,24 @@ final class MiniMap: SKNode {
         // Default wedge points along +Y. Ship heading 0 = +X (world right),
         // so we offset by -π/2 to align.
         headingWedge.zRotation = playerHeading - .pi / 2
+
+        // Selection wedge — rides the perimeter, pointing OUT from center
+        // in the direction of the selected object. Hidden when no
+        // selection is active.
+        if let sel = selection {
+            let dx     = sel.x - playerPosition.x
+            let dy     = sel.y - playerPosition.y
+            let bearing = atan2(dy, dx)                  // 0 = +X
+            // Park the wedge just outside the rim so it doesn't overlap dots.
+            let rim    = radius + 4
+            selectionWedge.position  = CGPoint(x: cos(bearing) * rim,
+                                               y: sin(bearing) * rim)
+            // Path points along +Y; rotate so its tip faces away from center.
+            selectionWedge.zRotation = bearing - .pi / 2
+            selectionWedge.isHidden  = false
+        } else {
+            selectionWedge.isHidden  = true
+        }
     }
 
     private func relativePosition(world: CGPoint,

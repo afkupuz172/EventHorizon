@@ -35,9 +35,14 @@ struct OutfitDef: Decodable {
         let hullDamage:    Double?
         let hitForce:      Double?
         let blastRadius:   Double?
+        /// Projectile classification used by the contact system.
+        ///   - `"standard"` (default) — collides with ships + asteroids
+        ///   - `"flare"`   — collides only with standard projectiles
+        /// Future kinds (homing, mines, etc.) slot in here.
+        let kind:          String?
 
         enum CodingKeys: String, CodingKey {
-            case velocity, lifetime, reload, inaccuracy
+            case velocity, lifetime, reload, inaccuracy, kind
             case turretTurn   = "turret turn"
             case firingEnergy = "firing energy"
             case firingHeat   = "firing heat"

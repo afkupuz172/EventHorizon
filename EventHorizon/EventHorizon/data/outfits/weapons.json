@@ -2,7 +2,7 @@
     "weapons": [
     {
         "outfit": "Heavy Laser Turret",
-        "category": "Turrets",
+        "category": "turret",
         "series": "Turrets",
         "index": 1050,
         "cost": 320000,

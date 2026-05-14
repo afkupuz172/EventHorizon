@@ -4,7 +4,7 @@ import simd
 
 final class ShipNode: SKNode {
 
-    private let metadata:      ShipMetadata
+    let metadata:              ShipMetadata
     private let isLocalPlayer: Bool
 
     private var visual:       SKNode!
@@ -66,6 +66,22 @@ final class ShipNode: SKNode {
         setupVisual()
         addChild(visual)
         addChild(makeThrustEmitter())
+
+        // Collision body — used purely for contact detection (see
+        // `CollisionCategory`). The radius prefers the ship JSON's
+        // `collision radius` attribute; otherwise we approximate as 40% of
+        // the rendered viewport so it covers the painted body but not the
+        // surrounding glow/aura.
+        let jsonRadius   = (def?.attributes.collisionRadius).map { CGFloat($0) }
+        let defaultR     = max(self.metadata.viewportSize.width, self.metadata.viewportSize.height) * 0.40
+        let radius       = jsonRadius ?? defaultR
+        let body         = SKPhysicsBody(circleOfRadius: radius)
+        body.isDynamic         = false                       // sim owns position
+        body.affectedByGravity = false
+        body.categoryBitMask   = CollisionCategory.ship
+        body.collisionBitMask  = 0                            // contact only
+        body.contactTestBitMask = CollisionCategory.projectileStandard
+        self.physicsBody = body
     }
 
     required init?(coder: NSCoder) { fatalError() }

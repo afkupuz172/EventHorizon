@@ -99,6 +99,10 @@ extension ShipMetadata {
         thrustMounts: [
             Mount(bodyPoint: CGPoint(x: 0, y: -42))
         ],
+        // Legacy in-Swift mount list — turret positions now live in
+        // `ringship.json`'s `"turret hardpoints"` array. These two front
+        // mounts remain as a fallback for any code path that hasn't
+        // migrated to the JSON-driven hardpoints yet.
         gunMounts: [
             Mount(bodyPoint: CGPoint(x: -10, y: 32)),
             Mount(bodyPoint: CGPoint(x:  10, y: 32)),

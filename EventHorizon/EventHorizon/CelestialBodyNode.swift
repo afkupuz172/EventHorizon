@@ -49,6 +49,10 @@ final class CelestialBodyNode: SKNode {
     /// `false` for the sun — only planets and asteroids respond to taps.
     var isSelectable: Bool { kind != .sun }
 
+    /// Asteroid hit points. Decremented by contact damage; at ≤ 0 the body
+    /// is removed by `GameScene`. Planets/suns ignore this field.
+    var hitPoints: CGFloat = 0
+
     private weak var selectionBracket: SKShapeNode?
 
     init(id: String,

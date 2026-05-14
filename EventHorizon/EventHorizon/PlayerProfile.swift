@@ -28,6 +28,11 @@ final class PlayerProfile {
     /// Faction standings. Reserved for gameplay; saved as-is.
     var reputation: [String: Int] = [:]
 
+    /// Factions whose ships are fair game for the player's weapons without
+    /// requiring tap-to-select first. Neutral/friendly hulls (and asteroids)
+    /// must be explicitly selected before player projectiles will hit them.
+    var hostileFactions: Set<String> = ["pirate", "hostile"]
+
     /// Single- vs multiplayer session — also the save bucket.
     var mode: SaveProfile.Mode = .singlePlayer
 

@@ -1,6 +1,6 @@
 import SpriteKit
 
-final class GameScene: SKScene {
+final class GameScene: SKScene, SKPhysicsContactDelegate {
 
     // ── Mode ───────────────────────────────────────────────────────────────────
     private let mode: GameMode
@@ -19,7 +19,35 @@ final class GameScene: SKScene {
     // ── Game entities ──────────────────────────────────────────────────────────
     private var mySessionId:    String?
     private var shipNodes:      [String: ShipNode]    = [:]
-    private var projectileNodes:[String: SKShapeNode] = [:]
+    private var projectileNodes:[String: ProjectileNode] = [:]
+
+    /// Position + velocity of the local ship at the moment of the last
+    /// snapshot. Used to extrapolate per-frame in `update(_:)` so the
+    /// camera (and therefore everything camera-relative, like planets) moves
+    /// at 60 Hz instead of jumping every 50 ms with the sim tick rate —
+    /// otherwise planets visibly jitter when the player follows them.
+    private var localBaselinePos:  CGPoint = .zero
+    private var localBaselineVel:  CGVector = .zero
+    private var localBaselineTime: TimeInterval = 0
+
+    /// One slot per installed beam-weapon instance. Each tracks its own
+    /// world-space aim angle so multiple turrets can converge on the same
+    /// target at the configured `turretTurn` rate. Slots are recycled
+    /// frame-to-frame; the array shrinks/grows when outfits change.
+    private struct TurretSlot {
+        var aimAngle: CGFloat       // current world-space angle in radians
+        let beam:     BeamNode
+        let impact:   SKNode
+    }
+    private var turretSlots: [TurretSlot] = []
+    private var lastBeamUpdateTime: TimeInterval = 0
+
+    /// Soft cloud texture used for every beam impact puff. Generated once,
+    /// cached. Far smoother than a hard-edged `SKShapeNode` circle.
+    private lazy var impactCloudTexture: SKTexture = Self.makeCloudTexture(
+        coreColor: .white,
+        glowColor: UIColor(red: 0.55, green: 0.95, blue: 1.0, alpha: 1)
+    )
 
     // ── Lean animation ─────────────────────────────────────────────────────────
     private var leanAmount: Float = 0
@@ -124,11 +152,19 @@ final class GameScene: SKScene {
         guard !isPrepared else { return }
         isPrepared = true
         backgroundColor = .black
+        setupPhysics()
         setupCamera()
         setupStarField()
         setupBoundary()
         setupSolarSystem()
         setupHUD()
+    }
+
+    private func setupPhysics() {
+        // Zero gravity — we use the physics engine for contact callbacks
+        // only. The sim owns ship/projectile motion.
+        physicsWorld.gravity         = .zero
+        physicsWorld.contactDelegate = self
     }
 
     /// Same heavy build as `prepareScene` but split across main-queue async
@@ -552,10 +588,18 @@ final class GameScene: SKScene {
         if mode == .singlePlayer, !isDocking, let sim = offlineSim {
             if currentTime - lastSimTime >= simInterval {
                 lastSimTime = currentTime
-                let snap = sim.step(input: localInput)
+                let (wname, weapon) = currentPlayerWeapon()
+                let snap = sim.step(input: localInput,
+                                    weaponName: wname,
+                                    weapon: weapon)
                 applySnapshot(snap, mySessionId: sim.sessionId)
             }
         }
+
+        // Beam weapons fire EVERY frame (continuous), separately from the
+        // sim tick — `reload <= 0` weapons render a line + apply per-second
+        // damage scaled by elapsed render time.
+        tickBeamWeapon(at: currentTime)
 
         // Parallax — `layer.position = cam.position * factor`. A layer with
         // factor = 1 moves perfectly with the camera and therefore appears
@@ -576,6 +620,13 @@ final class GameScene: SKScene {
         // tracking it keeps the camera locked to the visible ship through
         // both transitions.
         if let sid = mySessionId, let node = shipNodes[sid] {
+            // Between sim ticks, slide the local ship along its last known
+            // velocity vector. Without this the ship's world position jumps
+            // every 50 ms while planets advance every frame — which looks
+            // like the planet is jittering whenever the player is alongside.
+            if !isDocking, !isDisembarking, let predicted = extrapolatedLocalPosition() {
+                node.position = predicted
+            }
             cameraNode.position = node.position
         }
 
@@ -612,7 +663,8 @@ final class GameScene: SKScene {
                        playerHeading:  playerHeading,
                        suns:           system.sunPositions,
                        planets:        system.planetPositions,
-                       ships:          otherShips)
+                       ships:          otherShips,
+                       selection:      selectedBody?.position)
 
         // Keep the tooltip's distance value in sync as the player flies, and
         // gate the Dock button on the close-and-slow conditions.
@@ -831,6 +883,33 @@ final class GameScene: SKScene {
         }
     }
 
+    /// Snapshot of the local ship's current sim state. Recorded so the
+    /// `update(_:)` loop can extrapolate its position smoothly between
+    /// sim ticks — otherwise the camera lurches in 50 ms steps while the
+    /// solar system moves at the render rate, producing visible jitter on
+    /// nearby planets.
+    private func captureLocalBaseline(from snapshot: ShipSnapshot) {
+        localBaselinePos  = CGPoint(x: CGFloat(snapshot.x),    y: CGFloat(snapshot.y))
+        localBaselineVel  = CGVector(dx: CGFloat(snapshot.velX), dy: CGFloat(snapshot.velY))
+        localBaselineTime = CACurrentMediaTime()
+    }
+
+    /// Returns the local ship's predicted world position right now, using
+    /// `pos + vel * elapsed` from the most recent snapshot. Falls back to
+    /// the node's current position if no baseline has been captured yet.
+    private func extrapolatedLocalPosition() -> CGPoint? {
+        guard let sid = mySessionId, let node = shipNodes[sid] else { return nil }
+        guard localBaselineTime > 0 else { return node.position }
+        let dt = CACurrentMediaTime() - localBaselineTime
+        // Clamp dt so an extreme stall (app backgrounded, lag spike) doesn't
+        // catapult the prediction far past the next tick.
+        let clamped = min(max(dt, 0), simInterval * 2)
+        return CGPoint(
+            x: localBaselinePos.x + localBaselineVel.dx * CGFloat(clamped),
+            y: localBaselinePos.y + localBaselineVel.dy * CGFloat(clamped)
+        )
+    }
+
     private func currentPlayerHeading() -> CGFloat {
         guard let sid = mySessionId, let ship = shipNodes[sid] else { return 0 }
         return ship.heading
@@ -889,11 +968,13 @@ final class GameScene: SKScene {
                 // the local ship's transform until it completes.
                 if isDisembarking, id == mySessionId { continue }
                 node.update(from: data, sunPosition: primarySunPosition)
+                if id == mySessionId { captureLocalBaseline(from: data) }
             } else {
                 let node = ShipNode(isLocalPlayer: id == mySessionId)
                 addChild(node)
                 shipNodes[id] = node
                 node.update(from: data, sunPosition: primarySunPosition)
+                if id == mySessionId { captureLocalBaseline(from: data) }
 
                 // First appearance for the local player while disembarking:
                 // override the sim's position with the planet center, then
@@ -922,7 +1003,11 @@ final class GameScene: SKScene {
             if let node = projectileNodes[id] {
                 node.position = CGPoint(x: CGFloat(data.x), y: CGFloat(data.y))
             } else {
-                let node      = makeProjectile(isOwn: data.ownerId == mySessionId)
+                let node = ProjectileNode(id:         id,
+                                          ownerId:    data.ownerId,
+                                          weaponName: data.weaponName,
+                                          kind:       data.kind,
+                                          isOwn:      data.ownerId == mySessionId)
                 node.position = CGPoint(x: CGFloat(data.x), y: CGFloat(data.y))
                 addChild(node)
                 projectileNodes[id] = node
@@ -933,14 +1018,505 @@ final class GameScene: SKScene {
         }
     }
 
-    // MARK: – Helpers
+    // MARK: – Weapons + contact handling
 
-    private func makeProjectile(isOwn: Bool) -> SKShapeNode {
-        let node         = SKShapeNode(rectOf: CGSize(width: 5, height: 12), cornerRadius: 2)
-        node.fillColor   = isOwn ? .yellow : UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
-        node.strokeColor = .clear
-        node.glowWidth   = 8
-        return node
+    /// Looks up the player's currently-equipped firing weapon. First
+    /// installed outfit with a non-nil `weapon` block wins; sorted by name
+    /// so behavior is stable across runs.
+    private func currentPlayerWeapon() -> (name: String?, stats: OutfitDef.WeaponStats?) {
+        let profile = PlayerProfile.shared
+        for name in profile.installedOutfits.keys.sorted() {
+            if let def = OutfitRegistry.shared.outfit(named: name),
+               let w   = def.weapon {
+                return (name, w)
+            }
+        }
+        return (nil, nil)
+    }
+
+    func didBegin(_ contact: SKPhysicsContact) {
+        // Pair the two bodies by their categories so the rest of the
+        // method can address them by role rather than A/B order.
+        let bodies = [contact.bodyA, contact.bodyB]
+        guard let projBody = bodies.first(where: {
+                ($0.categoryBitMask & (CollisionCategory.projectileStandard
+                                     | CollisionCategory.projectileFlare)) != 0 }),
+              let proj     = projBody.node as? ProjectileNode
+        else { return }
+        let otherBody = bodies.first { $0 !== projBody }
+
+        switch projBody.categoryBitMask {
+        case CollisionCategory.projectileFlare:
+            // Flare intercepts an incoming standard projectile.
+            if let other = otherBody?.node as? ProjectileNode {
+                consumeProjectile(other, withExplosion: false)
+                consumeProjectile(proj,  withExplosion: false)
+            }
+
+        case CollisionCategory.projectileStandard:
+            if let ship = otherBody?.node as? ShipNode {
+                handleHit(projectile: proj, ship: ship)
+            } else if let body = otherBody?.node as? CelestialBodyNode {
+                handleHit(projectile: proj, asteroid: body)
+            } else if let flare = otherBody?.node as? ProjectileNode,
+                      flare.categoryBit == CollisionCategory.projectileFlare {
+                // Flare-vs-standard handled in the flare branch above; this
+                // catches the symmetric case.
+                consumeProjectile(proj,  withExplosion: false)
+                consumeProjectile(flare, withExplosion: false)
+            }
+
+        default: break
+        }
+    }
+
+    /// Applies (or skips) damage to a ship target. Player-fired projectiles
+    /// hit hostile-faction ships without selection; neutral/friendly hulls
+    /// must be selected first or the bolt passes harmlessly.
+    private func handleHit(projectile: ProjectileNode, ship: ShipNode) {
+        // Don't damage the firing ship.
+        if let sid = mySessionId, projectile.ownerId == sid, ship === shipNodes[sid] { return }
+
+        let weapon = projectile.weaponName.flatMap { OutfitRegistry.shared.outfit(named: $0)?.weapon }
+        // Only player-owned bolts respect the selection-required rule.
+        // (Future: NPC AI projectiles will always hit the player.)
+        let fromPlayer = projectile.ownerId == (mySessionId ?? "")
+        if fromPlayer {
+            let target = shipNodes.first(where: { $0.value === ship })?.key
+            let isHostile = isHostileShip(sessionId: target)
+            let isSelected = false  // ships aren't selectable yet in this codebase
+            if !isHostile && !isSelected { return }
+        }
+
+        // Local player damage flows back into OfflineSim so shields/hull are
+        // authoritative. Other ships will get the same treatment once
+        // NPC/server damage state lands. Damage stats in JSON are *per
+        // second*; for a discrete projectile we multiply by the weapon's
+        // reload (= seconds between shots) so total DPS is constant.
+        if let sid = mySessionId, ship === shipNodes[sid], let sim = offlineSim {
+            let dx = Float(ship.position.x - projectile.position.x)
+            let dy = Float(ship.position.y - projectile.position.y)
+            let len = max(0.001, sqrt(dx * dx + dy * dy))
+            let reload = Float(max(weapon?.reload ?? 1, 0.001))
+            sim.applyDamage(
+                shieldDamage: Float(weapon?.shieldDamage ?? 1) * reload,
+                hullDamage:   Float(weapon?.hullDamage   ?? 1) * reload,
+                force:        Float(weapon?.hitForce     ?? 1),
+                direction:    (dx / len, dy / len)
+            )
+        }
+
+        spawnHitFlash(at: projectile.position)
+        consumeProjectile(projectile, withExplosion: false)
+    }
+
+    /// Selection-gated asteroid damage. Off-selection bolts pass through;
+    /// on-selection bolts deduct from `hitPoints` and push the rock along
+    /// the projectile travel vector. At zero HP the asteroid is removed.
+    private func handleHit(projectile: ProjectileNode, asteroid: CelestialBodyNode) {
+        let fromPlayer = projectile.ownerId == (mySessionId ?? "")
+        if fromPlayer && selectedBody !== asteroid { return }
+
+        let weapon = projectile.weaponName.flatMap { OutfitRegistry.shared.outfit(named: $0)?.weapon }
+        let reload = max(weapon?.reload ?? 1, 0.001)
+        // hullDamage is per-second; one shot accounts for `reload` seconds.
+        let hullDmg = CGFloat((weapon?.hullDamage ?? 1) * reload)
+        asteroid.hitPoints -= hullDmg
+
+        // Knockback — impulse from projectile point of impact toward the
+        // asteroid's center, scaled by the weapon's `hitForce`.
+        if let pb = asteroid.physicsBody {
+            let dx  = asteroid.position.x - projectile.position.x
+            let dy  = asteroid.position.y - projectile.position.y
+            let len = max(0.001, sqrt(dx * dx + dy * dy))
+            let force = CGFloat(weapon?.hitForce ?? 1) * 0.6
+            pb.applyImpulse(CGVector(dx: (dx / len) * force,
+                                     dy: (dy / len) * force))
+        }
+
+        spawnHitFlash(at: projectile.position)
+        consumeProjectile(projectile, withExplosion: false)
+
+        if asteroid.hitPoints <= 0 {
+            destroyAsteroid(asteroid)
+        }
+    }
+
+    private func destroyAsteroid(_ asteroid: CelestialBodyNode) {
+        if selectedBody === asteroid {
+            selectedBody = nil
+            infoTooltip.hide()
+        }
+        spawnBurst(at: asteroid.position, color: .orange, radius: asteroid.bodyRadius)
+        asteroid.removeFromParent()
+        solarSystem?.removeAsteroid(asteroid)
+    }
+
+    private func consumeProjectile(_ proj: ProjectileNode, withExplosion: Bool) {
+        offlineSim?.markProjectileConsumed(proj.projectileID)
+        proj.removeFromParent()
+        projectileNodes.removeValue(forKey: proj.projectileID)
+    }
+
+    private func spawnHitFlash(at point: CGPoint) {
+        let flash         = SKShapeNode(circleOfRadius: 5)
+        flash.fillColor   = UIColor(red: 1.0, green: 0.85, blue: 0.4, alpha: 1)
+        flash.strokeColor = .clear
+        flash.glowWidth   = 10
+        flash.blendMode   = .add
+        flash.position    = point
+        flash.zPosition   = 5
+        addChild(flash)
+        flash.run(.sequence([
+            .group([.scale(to: 2.5, duration: 0.18),
+                    .fadeOut(withDuration: 0.18)]),
+            .removeFromParent(),
+        ]))
+    }
+
+    private func spawnBurst(at point: CGPoint, color: UIColor, radius: CGFloat) {
+        for _ in 0..<10 {
+            let shard         = SKShapeNode(circleOfRadius: CGFloat.random(in: 1.5...3.5))
+            shard.fillColor   = color
+            shard.strokeColor = .clear
+            shard.glowWidth   = 4
+            shard.position    = point
+            shard.blendMode   = .add
+            addChild(shard)
+            let angle  = CGFloat.random(in: 0..<(2 * .pi))
+            let speed  = CGFloat.random(in: radius * 1.2 ... radius * 2.5)
+            let dest   = CGPoint(x: point.x + cos(angle) * speed,
+                                 y: point.y + sin(angle) * speed)
+            shard.run(.sequence([
+                .group([.move(to: dest, duration: 0.5),
+                        .fadeOut(withDuration: 0.5)]),
+                .removeFromParent(),
+            ]))
+        }
+    }
+
+    /// Returns true if `sessionId` corresponds to a ship whose `faction`
+    /// is in `PlayerProfile.hostileFactions`. Asteroids never count as
+    /// ships here.
+    private func isHostileShip(sessionId: String?) -> Bool {
+        // No NPC/peer faction wiring yet — placeholder for when ship
+        // snapshots start carrying a faction string. The local player ship
+        // never returns true here.
+        return false
+    }
+
+    // MARK: – Beam weapons (turret-tracking)
+
+    /// Per render frame: figure out which beam weapons the player has
+    /// installed, allocate one tracking slot per instance, and update
+    /// each slot's aim / ray-cast / damage / visual. Turrets (category
+    /// "Turrets") rotate independently of the ship at their `turretTurn`
+    /// rate; non-turret beams fire straight along the ship heading.
+    private func tickBeamWeapon(at now: TimeInterval) {
+        let firing = mode == .multiplayer
+            ? NetworkManager.shared.input.firing
+            : localInput.firing
+
+        let weapons = installedBeamWeapons()
+
+        guard firing,
+              let sid  = mySessionId,
+              let ship = shipNodes[sid],
+              !weapons.isEmpty
+        else {
+            for slot in turretSlots {
+                slot.beam.isHidden   = true
+                slot.impact.isHidden = true
+            }
+            lastBeamUpdateTime = now
+            return
+        }
+
+        // Total turret count = sum of installed counts of beam weapons.
+        let totalSlots = weapons.reduce(0) { $0 + $1.count }
+        resizeTurretSlots(to: totalSlots)
+
+        // Default aim angle for newly-allocated slots = ship heading so
+        // turrets don't snap from 0 → heading on first fire.
+        for i in turretSlots.indices where turretSlots[i].aimAngle == 0 {
+            turretSlots[i].aimAngle = ship.heading
+        }
+
+        // Hardpoints come from `ringship.json` so each hull can have a
+        // bespoke turret layout without code changes. Falls back to the
+        // metadata's gun mounts only if the JSON omits the field.
+        let hardpoints = turretHardpoints(for: ship)
+        guard !hardpoints.isEmpty else {
+            for slot in turretSlots {
+                slot.beam.isHidden   = true
+                slot.impact.isHidden = true
+            }
+            lastBeamUpdateTime = now
+            return
+        }
+
+        let dt = min(max(now - lastBeamUpdateTime, 0), 0.1)
+        var slotIdx = 0
+        for entry in weapons {
+            for _ in 0 ..< entry.count {
+                let mount = hardpoints[slotIdx % hardpoints.count]
+                tickTurret(slotIndex: slotIdx,
+                           weapon:    entry.weapon,
+                           isTurret:  entry.isTurret,
+                           mount:     mount,
+                           ship:      ship,
+                           dt:        dt)
+                slotIdx += 1
+            }
+        }
+
+        lastBeamUpdateTime = now
+    }
+
+    /// Body-local turret mount positions for the given ship. Reads the
+    /// JSON `"turret hardpoints"` field first; falls back to the legacy
+    /// `gunMounts` baked into `ShipMetadata` so older hulls keep working
+    /// until their JSON is updated.
+    private func turretHardpoints(for ship: ShipNode) -> [ShipMetadata.Mount] {
+        let shipID = ship.metadata.assetName
+        if let json = ShipRegistry.shared.def(for: shipID)?.turretHardpoints, !json.isEmpty {
+            return json.map { ShipMetadata.Mount(bodyPoint: CGPoint(x: $0.x, y: $0.y)) }
+        }
+        return ship.metadata.gunMounts
+    }
+
+    /// `(name, weapon, count, isTurret)` for every installed outfit whose
+    /// weapon block flags it as a beam (`reload >= 1`).
+    private func installedBeamWeapons() -> [(name: String,
+                                              weapon: OutfitDef.WeaponStats,
+                                              count: Int,
+                                              isTurret: Bool)] {
+        var out: [(String, OutfitDef.WeaponStats, Int, Bool)] = []
+        let profile = PlayerProfile.shared
+        for name in profile.installedOutfits.keys.sorted() {
+            guard let def    = OutfitRegistry.shared.outfit(named: name),
+                  let weapon = def.weapon,
+                  (weapon.reload ?? 0) >= 1.0,
+                  let count  = profile.installedOutfits[name], count > 0
+            else { continue }
+            // JSON category is "turret" (singular, lowercased) for the
+            // Heavy Laser Turret. Accept the plural form too so future
+            // outfit JSON typos don't silently disable tracking.
+            let cat = def.category?.lowercased() ?? ""
+            let isTurret = (cat == "turret" || cat == "turrets")
+            out.append((name, weapon, count, isTurret))
+        }
+        return out
+    }
+
+    private func resizeTurretSlots(to count: Int) {
+        while turretSlots.count < count {
+            let beam   = BeamNode()
+            beam.zPosition = 4
+            addChild(beam)
+            let impact = makeImpactPuff()
+            addChild(impact)
+            turretSlots.append(TurretSlot(aimAngle: 0,
+                                          beam: beam,
+                                          impact: impact))
+        }
+        while turretSlots.count > count {
+            let s = turretSlots.removeLast()
+            s.beam.removeFromParent()
+            s.impact.removeFromParent()
+        }
+    }
+
+    /// Translates a body-local mount point through the ship's current
+    /// visual yaw to obtain its world-space position. The PNG asset's
+    /// "nose" is +y in body coords; the visual is rotated by
+    /// `heading − π/2` so heading=0 (facing world +x) corresponds to yaw
+    /// = −π/2, which maps body +y to world +x as expected.
+    private func mountWorldPosition(mount: ShipMetadata.Mount,
+                                    ship: ShipNode) -> CGPoint {
+        let yaw = ship.heading - .pi / 2
+        let bx  = mount.bodyPoint.x
+        let by  = mount.bodyPoint.y
+        let wx  = bx * cos(yaw) - by * sin(yaw)
+        let wy  = bx * sin(yaw) + by * cos(yaw)
+        return CGPoint(x: ship.position.x + wx, y: ship.position.y + wy)
+    }
+
+    /// One frame's worth of work for a single turret slot.
+    private func tickTurret(slotIndex i: Int,
+                            weapon: OutfitDef.WeaponStats,
+                            isTurret: Bool,
+                            mount: ShipMetadata.Mount,
+                            ship: ShipNode,
+                            dt: TimeInterval) {
+        let origin = mountWorldPosition(mount: mount, ship: ship)
+        let range  = CGFloat((weapon.velocity ?? 400) * (weapon.lifetime ?? 1))
+
+        // ── Determine where the turret WANTS to aim ────────────────────
+        let targetAngle: CGFloat
+        if isTurret, let target = selectedBody, target.kind == .asteroid {
+            // Bearing from the mount to the target's centre.
+            let dx = target.position.x - origin.x
+            let dy = target.position.y - origin.y
+            targetAngle = atan2(dy, dx)
+        } else {
+            // No target (or non-turret weapon) → align with ship heading.
+            targetAngle = ship.heading
+        }
+
+        // ── Rotate current aim toward target at `turretTurn` rad/sec ──
+        var aim = turretSlots[i].aimAngle
+        if isTurret {
+            let raw   = targetAngle - aim
+            let diff  = atan2(sin(raw), cos(raw))
+            let speed = CGFloat(weapon.turretTurn ?? 2.0)
+            let step  = speed * CGFloat(dt)
+            aim += abs(diff) <= step ? diff : (diff > 0 ? step : -step)
+        } else {
+            aim = targetAngle    // fixed-mount weapons aim straight ahead
+        }
+        turretSlots[i].aimAngle = aim
+
+        let fullEnd = CGPoint(x: origin.x + cos(aim) * range,
+                              y: origin.y + sin(aim) * range)
+
+        // ── Ray-cast for a valid target ────────────────────────────────
+        var bestNode: SKNode?
+        var bestDist: CGFloat = .greatestFiniteMagnitude
+        physicsWorld.enumerateBodies(alongRayStart: origin, end: fullEnd) {
+            [weak self] body, point, _, _ in
+            guard let self, let node = body.node else { return }
+            if node === ship { return }
+
+            let isValid: Bool
+            if let s = node as? ShipNode {
+                let id = self.shipNodes.first(where: { $0.value === s })?.key
+                isValid = self.isHostileShip(sessionId: id)
+            } else if let cb = node as? CelestialBodyNode, cb.kind == .asteroid {
+                isValid = self.selectedBody === cb
+            } else {
+                isValid = false
+            }
+            guard isValid else { return }
+
+            let d = hypot(point.x - origin.x, point.y - origin.y)
+            if d < bestDist { bestDist = d; bestNode = node }
+        }
+
+        let endpoint: CGPoint
+        let didHit:   Bool
+        if bestDist.isFinite, let hit = bestNode {
+            endpoint = CGPoint(x: origin.x + cos(aim) * bestDist,
+                               y: origin.y + sin(aim) * bestDist)
+            // Damage is additive across slots — each beam ticks
+            // independently with its own `dt`, so N turrets on one target
+            // multiply DPS by N as requested.
+            applyBeamDamage(to: hit, weapon: weapon, elapsed: dt)
+            didHit = true
+        } else {
+            endpoint = fullEnd
+            didHit   = false
+        }
+
+        let slot = turretSlots[i]
+        slot.beam.isHidden = false
+        slot.beam.setEndpoints(from: origin, to: endpoint)
+        slot.impact.isHidden = !didHit
+        if didHit { slot.impact.position = endpoint }
+    }
+
+    // MARK: – Impact puff (soft cloud)
+
+    /// Instantiates one ready-to-use impact node. Reuses the cached cloud
+    /// texture so allocation is cheap; the gentle scale pulse is local to
+    /// the SKAction tree, no per-frame work from us.
+    private func makeImpactPuff() -> SKNode {
+        let impact         = SKNode()
+        impact.zPosition   = 5
+        impact.isHidden    = true
+
+        let cloud          = SKSpriteNode(texture: impactCloudTexture)
+        cloud.size         = CGSize(width: 42, height: 42)
+        cloud.blendMode    = .add
+        cloud.name         = "cloud"
+        impact.addChild(cloud)
+
+        // Gentle pulse — purely cosmetic, runs forever once set up.
+        let pulseUp        = SKAction.scale(to: 1.18, duration: 0.14)
+        let pulseDn        = SKAction.scale(to: 0.86, duration: 0.14)
+        pulseUp.timingMode = .easeInEaseOut
+        pulseDn.timingMode = .easeInEaseOut
+        cloud.run(.repeatForever(.sequence([pulseUp, pulseDn])))
+
+        return impact
+    }
+
+    /// Builds a soft, cloud-like radial gradient texture: bright white
+    /// core, fading to cyan, fading to fully transparent. Multiple stops
+    /// produce a non-circular, billowy falloff that reads as gas/plasma
+    /// rather than a hard disc.
+    private static func makeCloudTexture(coreColor: UIColor,
+                                         glowColor: UIColor) -> SKTexture {
+        let pixelSize: CGFloat = 256
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale  = 1
+        fmt.opaque = false
+        let renderer = UIGraphicsImageRenderer(
+            size: CGSize(width: pixelSize, height: pixelSize), format: fmt
+        )
+        let img = renderer.image { ctx in
+            let cg     = ctx.cgContext
+            let center = CGPoint(x: pixelSize / 2, y: pixelSize / 2)
+            let maxR   = pixelSize / 2
+            let stops: [CGColor] = [
+                coreColor.withAlphaComponent(0.95).cgColor,
+                glowColor.withAlphaComponent(0.65).cgColor,
+                glowColor.withAlphaComponent(0.32).cgColor,
+                glowColor.withAlphaComponent(0.14).cgColor,
+                glowColor.withAlphaComponent(0.05).cgColor,
+                glowColor.withAlphaComponent(0.0).cgColor,
+            ]
+            let locations: [CGFloat] = [0.0, 0.16, 0.36, 0.56, 0.78, 1.0]
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                  colors: stops as CFArray,
+                                  locations: locations) {
+                cg.drawRadialGradient(g,
+                                      startCenter: center, startRadius: 0,
+                                      endCenter:   center, endRadius:   maxR,
+                                      options: [])
+            }
+        }
+        return SKTexture(image: img)
+    }
+
+    private func applyBeamDamage(to node: SKNode,
+                                 weapon: OutfitDef.WeaponStats,
+                                 elapsed: TimeInterval) {
+        // Clamp elapsed so a long pause (background → resume, app launch)
+        // doesn't produce a single oversized damage tick on the first frame
+        // after firing resumes.
+        let dt = min(max(elapsed, 0), 0.1)
+        let shieldHit = CGFloat((weapon.shieldDamage ?? 0)) * CGFloat(dt)
+        let hullHit   = CGFloat((weapon.hullDamage   ?? 0)) * CGFloat(dt)
+
+        if let asteroid = node as? CelestialBodyNode, asteroid.kind == .asteroid {
+            asteroid.hitPoints -= hullHit
+            // Per-frame knockback impulse, small and in the beam's direction.
+            if let pb = asteroid.physicsBody,
+               let sid = mySessionId, let ship = shipNodes[sid] {
+                let dx = asteroid.position.x - ship.position.x
+                let dy = asteroid.position.y - ship.position.y
+                let len = max(0.001, sqrt(dx * dx + dy * dy))
+                let f   = CGFloat(weapon.hitForce ?? 0) * CGFloat(dt) * 0.5
+                pb.applyImpulse(CGVector(dx: dx / len * f, dy: dy / len * f))
+            }
+            if asteroid.hitPoints <= 0 {
+                destroyAsteroid(asteroid)
+            }
+        }
+        // Ship damage path will route through OfflineSim when remote/NPC
+        // ships carry damage state — placeholder for now.
+        _ = shieldHit
     }
 }
 

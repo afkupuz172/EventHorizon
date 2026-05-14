@@ -16,6 +16,27 @@ struct ShipDef: Decodable {
     let attributes: Attributes
     let outfits:    [InstalledOutfit]?
 
+    /// Faction this hull is flown by. Drives whether the player's projectiles
+    /// can damage it without first being selected: hostile factions are
+    /// fair game, neutral/friendly must be selected. Default is `"neutral"`.
+    let faction: String?
+
+    /// Body-local positions (origin = ship center, +y = nose) where turret
+    /// weapons emit their beams/projectiles. Cycled through when more
+    /// turret instances are installed than there are hardpoints. JSON key
+    /// is `"turret hardpoints"`.
+    let turretHardpoints: [Hardpoint]?
+
+    struct Hardpoint: Decodable {
+        let x: Double
+        let y: Double
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ship, attributes, outfits, faction
+        case turretHardpoints = "turret hardpoints"
+    }
+
     /// Convenience accessor — display name is just `ship`, but `displayName`
     /// reads better at call sites.
     var displayName: String { ship }
@@ -33,6 +54,10 @@ struct ShipDef: Decodable {
         let weaponCapacity:  Double?
         let engineCapacity:  Double?
         let heatDissipation: Double?
+        /// Radius (in world units) of the circular physics body used for
+        /// projectile collisions. Optional — defaults to a fraction of the
+        /// render radius when absent (`ShipMetadata.collisionRadius`).
+        let collisionRadius: Double?
 
         enum CodingKeys: String, CodingKey {
             case category, cost, shields, hull, mass, drag
@@ -42,6 +67,7 @@ struct ShipDef: Decodable {
             case weaponCapacity   = "weapon capacity"
             case engineCapacity   = "engine capacity"
             case heatDissipation  = "heat dissipation"
+            case collisionRadius  = "collision radius"
         }
     }
 

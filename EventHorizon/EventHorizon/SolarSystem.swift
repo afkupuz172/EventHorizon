@@ -52,6 +52,15 @@ final class SolarSystem {
         tick(at: Date().timeIntervalSince1970)
     }
 
+    /// Drop an asteroid that the combat system has destroyed. Keeps
+    /// `bodies` in sync so the mini-map / tap-to-select stop reporting it.
+    func removeAsteroid(_ node: CelestialBodyNode) {
+        guard node.kind == .asteroid else { return }
+        if let idx = bodies.firstIndex(where: { $0 === node }) {
+            bodies.remove(at: idx)
+        }
+    }
+
     /// Per-frame update — recomputes orbital body positions from the given
     /// absolute time (`Date().timeIntervalSince1970`). Asteroids and other
     /// non-orbital bodies are left alone.
@@ -239,14 +248,40 @@ final class SolarSystem {
             )
             body.zPosition = 2
 
-            // The sprite (visible mesh) spins; its parent body stays
-            // axis-aligned so the selection bracket reads correctly.
+            // Combat: HP scales with size so big rocks take more shots than
+            // pebbles. Tuned for default Heavy Laser Turret hull damage.
+            body.hitPoints = max(15, diameter * 0.7)
+
+            // Alpha-traced collider follows the rocky silhouette of the
+            // baked texture (transparent pixels are excluded), so beams
+            // don't "hit" the empty space around the asteroid. Threshold
+            // 0.4 trims the soft anti-aliased edge while keeping the
+            // main rock mass intact.
+            let spriteSize = CGSize(width: diameter, height: diameter)
+            let pb = SKPhysicsBody(texture: texture,
+                                   alphaThreshold: 0.4,
+                                   size: spriteSize)
+            pb.isDynamic         = true
+            pb.affectedByGravity = false
+            pb.linearDamping     = 0.4    // slow drift back toward 0 velocity
+            pb.angularDamping    = 0.4
+            pb.mass              = max(0.5, Double(diameter) * 0.05)
+            pb.categoryBitMask   = CollisionCategory.asteroid
+            pb.collisionBitMask  = 0
+            pb.contactTestBitMask = CollisionCategory.projectileStandard
+            body.physicsBody = pb
+
+            // Rotate the PARENT (body) rather than the child sprite so the
+            // alpha-traced physics body rotates with the visible mesh —
+            // otherwise the collider drifts out of alignment as the rock
+            // spins. The selection bracket spins with the asteroid too,
+            // which reads as natural for a tumbling rock.
             let sprite       = SKSpriteNode(texture: texture)
             sprite.size      = CGSize(width: diameter, height: diameter)
-            sprite.zRotation = CGFloat.random(in: 0...(2 * .pi))
+            body.zRotation   = CGFloat.random(in: 0...(2 * .pi))
             let period       = TimeInterval(CGFloat.random(in: CGFloat(cfg.minSpinPeriod)...CGFloat(cfg.maxSpinPeriod)))
             let direction: CGFloat = Bool.random() ? 1 : -1
-            sprite.run(.repeatForever(
+            body.run(.repeatForever(
                 .rotate(byAngle: direction * 2 * .pi, duration: period)
             ))
             body.addChild(sprite)
