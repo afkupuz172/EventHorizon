@@ -27,12 +27,22 @@ final class ShipNode: SKNode {
     /// wedge.
     private(set) var heading: CGFloat = 0
 
-    init(isLocalPlayer: Bool, metadata: ShipMetadata = .ringship) {
+    /// Magnitude of the ship's velocity in world units per second. Used by
+    /// the docking system to gate the "Dock" button on slow approaches.
+    /// (Named to avoid colliding with `SKNode.speed`, which controls action
+    /// playback rate.)
+    private(set) var velocityMagnitude: CGFloat = 0
+
+    init(isLocalPlayer: Bool, metadata: ShipMetadata? = nil) {
+        // Local player flies whichever hull they last purchased at the
+        // shipyard; remote ships fall back to the default until we have a
+        // protocol message that announces per-player ship type.
         self.isLocalPlayer = isLocalPlayer
         self.metadata      = metadata
+            ?? (isLocalPlayer ? PlayerProfile.shared.currentShip : .ringship)
         super.init()
 
-        if let mount = metadata.thrustMounts.first {
+        if let mount = self.metadata.thrustMounts.first {
             thrustDistance = abs(mount.bodyPoint.y)
         }
 
@@ -316,7 +326,8 @@ final class ShipNode: SKNode {
 
     func update(from ship: ShipSnapshot, sunPosition: CGPoint = .zero) {
         position = CGPoint(x: CGFloat(ship.x), y: CGFloat(ship.y))
-        heading  = CGFloat(ship.angle)
+        heading           = CGFloat(ship.angle)
+        velocityMagnitude = hypot(CGFloat(ship.velX), CGFloat(ship.velY))
 
         // Heading: for the 3D path, rotate the model around scene +Z inside
         // the SCN scene. For the 2D PNG path, there's no SCN headingNode —

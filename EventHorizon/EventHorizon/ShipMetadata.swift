@@ -39,6 +39,9 @@ struct ShipMetadata {
     ///   and `applyLean(_:)` is a no-op. Cheaper to render.
     enum AssetKind { case usdc, png }
 
+    /// Human-readable name shown in the shipyard and elsewhere in the UI.
+    let displayName:      String
+
     // Asset
     let assetKind:        AssetKind
     let assetName:        String
@@ -65,6 +68,7 @@ extension ShipMetadata {
     /// 3D USDC ship — the original. Kept around as an example of the
     /// SK3DNode path and as a fallback if you want full 3D lean/lighting.
     static let spaceship1 = ShipMetadata(
+        displayName:      "Spaceship-1",
         assetKind:        .usdc,
         assetName:        "spaceship1",
         assetSubdirectory: "Art.scnassets/ships",
@@ -86,6 +90,7 @@ extension ShipMetadata {
     /// 2D ringship — the current default. The artwork is expected to point
     /// nose-up (top of the PNG). No 3D orientation, no lean.
     static let ringship = ShipMetadata(
+        displayName:      "Ringship",
         assetKind:        .png,
         assetName:        "ringship",
         assetSubdirectory: "Art.scnassets/ships",

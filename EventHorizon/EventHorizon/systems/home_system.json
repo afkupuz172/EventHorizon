@@ -17,7 +17,8 @@
       "centerX":       0,
       "centerY":       0,
       "orbitDistance": 2600,
-      "radius":        260
+      "radius":        260,
+      "services":      ["bar", "trade", "shipyard", "outfitter", "bank"]
     }
   ],
   "asteroids": {

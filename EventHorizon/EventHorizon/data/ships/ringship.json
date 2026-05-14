@@ -1,0 +1,215 @@
+{
+  "ship": "RingShip",
+  "sprite": "ship/bactrian",
+  "thumbnail": "thumbnail/bactrian",
+  "attributes": {
+    "licenses": [
+      "City-Ship"
+    ],
+    "category": "Utility",
+    "cost": 17600000,
+    "shields": 17500,
+    "hull": 8600,
+    "required crew": 70,
+    "bunks": 245,
+    "mass": 2450,
+    "drag": 30.6,
+    "heat dissipation": 0.22,
+    "fuel capacity": 700,
+    "cargo space": 530,
+    "outfit space": 740,
+    "weapon capacity": 300,
+    "engine capacity": 180,
+    "weapon": {
+      "blast radius": 260,
+      "shield damage": 2600,
+      "hull damage": 1300,
+      "hit force": 3900
+    }
+  },
+  "outfits": [
+    {
+      "name": "Sidewinder Missile Launcher",
+      "count": 2
+    },
+    {
+      "name": "Sidewinder Missile",
+      "count": 90
+    },
+    {
+      "name": "Torpedo Launcher",
+      "count": 1
+    },
+    {
+      "name": "Torpedo",
+      "count": 30
+    },
+    {
+      "name": "Heavy Laser Turret",
+      "count": 4
+    },
+    {
+      "name": "Heavy Anti-Missile Turret",
+      "count": 2
+    },
+    {
+      "name": "Fusion Reactor",
+      "count": 1
+    },
+    {
+      "name": "LP144a Battery Pack",
+      "count": 1
+    },
+    {
+      "name": "D94-YV Shield Generator",
+      "count": 1
+    },
+    {
+      "name": "Large Radar Jammer",
+      "count": 1
+    },
+    {
+      "name": "Ramscoop",
+      "count": 1
+    },
+    {
+      "name": "Laser Rifle",
+      "count": 15
+    },
+    {
+      "name": "X4700 Ion Thruster",
+      "count": 1
+    },
+    {
+      "name": "X5200 Ion Steering",
+      "count": 1
+    },
+    {
+      "name": "Hyperdrive",
+      "count": 1
+    }
+  ],
+  "engines": [
+    {
+      "x": 18.5,
+      "y": 232
+    },
+    {
+      "x": -15,
+      "y": 232
+    }
+  ],
+  "guns": [
+    {
+      "x": -9,
+      "y": -231.5
+    },
+    {
+      "x": 13.5,
+      "y": -231.5,
+      "weapon": "Torpedo Launcher"
+    },
+    {
+      "x": 36.5,
+      "y": -197,
+      "weapon": "Sidewinder Missile Launcher"
+    },
+    {
+      "x": 42,
+      "y": -193,
+      "weapon": "Sidewinder Missile Launcher"
+    }
+  ],
+  "turrets": [
+    {
+      "x": 37,
+      "y": -132.5,
+      "weapon": "Heavy Anti-Missile Turret"
+    },
+    {
+      "x": -39,
+      "y": -39,
+      "weapon": "Heavy Laser Turret"
+    },
+    {
+      "x": 31.5,
+      "y": -26,
+      "weapon": "Heavy Laser Turret"
+    },
+    {
+      "x": -42.5,
+      "y": 75,
+      "weapon": "Heavy Laser Turret"
+    },
+    {
+      "x": 32.5,
+      "y": 132,
+      "weapon": "Heavy Laser Turret"
+    },
+    {
+      "x": -33.5,
+      "y": 192.5,
+      "weapon": "Heavy Anti-Missile Turret"
+    }
+  ],
+  "bays": [
+    {
+      "type": "Fighter",
+      "x": -43.5,
+      "y": -125,
+      "launch effect": "human internal"
+    },
+    {
+      "type": "Fighter",
+      "x": 53,
+      "y": -72.5,
+      "launch effect": "human internal"
+    },
+    {
+      "type": "Fighter",
+      "x": -50,
+      "y": 103.5,
+      "launch effect": "human internal"
+    }
+  ],
+  "leaks": [
+    {
+      "type": "leak",
+      "count": 30,
+      "frequency": 50
+    },
+    {
+      "type": "flame",
+      "count": 30,
+      "frequency": 80
+    },
+    {
+      "type": "big leak",
+      "count": 50,
+      "frequency": 30
+    }
+  ],
+  "explosions": [
+    {
+      "type": "small explosion",
+      "count": 25
+    },
+    {
+      "type": "medium explosion",
+      "count": 35
+    },
+    {
+      "type": "large explosion",
+      "count": 45
+    },
+    {
+      "type": "huge explosion",
+      "count": 30
+    }
+  ],
+  "final explode": "final explosion large",
+  "description": [
+    "The Lionheart Bactrian is the last of the great city-ships, a design hearkening back to the early days of space colonization when a long-distance vessel needed to be a self-contained world, able to survive for weeks at a time without encountering an inhabited planet. It is not only a freighter, but a carrier, and a capable warship either at short range or at a distance.",
+    "Naturally, this versatility also makes it extremely expensive, and the Bactrian is normally only for sale to citizens who have been vetted by the local government of the Deep."
+  ]
+}

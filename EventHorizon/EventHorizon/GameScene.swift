@@ -50,10 +50,42 @@ final class GameScene: SKScene {
     private var infoTooltip:    InfoTooltip!
     private weak var selectedBody: CelestialBodyNode?
 
+    // ── Docking state ──────────────────────────────────────────────────────────
+    /// True while the dock animation is playing. While set, snapshots aren't
+    /// applied to the local player, the offline sim is paused, and all touch
+    /// input is ignored so the animation can't be interrupted.
+    private var isDocking = false
+
+    /// True while the disembark "rise" animation is playing — set in
+    /// `didMove` if `disembarkFrom` is provided and cleared by the animation
+    /// completion handler. Mirrors `isDocking`'s gating: skip local-player
+    /// snapshot updates so the animation owns the ship's position.
+    private var isDisembarking = false
+
+    /// Tuned thresholds for the "close + slow" dock gate.
+    private let dockProximityMultiplier: CGFloat = 1.6   // ≤ 1.6 × planet radius
+    private let dockMaxSpeed:            CGFloat = 55    // world units per second
+
     // MARK: – Init
 
-    init(size: CGSize, mode: GameMode) {
-        self.mode = mode
+    /// `spawnAt` is consulted in single-player mode as the offline sim's
+    /// starting position — `PlanetScene` passes a point just outside the
+    /// docked planet so the ship drifts back into open space on disembark.
+    /// Nil (the default) preserves the random spawn used on first launch.
+    private let spawnAt: CGPoint?
+
+    /// World position the docking animation should "rise" out of (typically
+    /// the planet's center). Non-nil → on first spawn the local ship is
+    /// placed here at scale 0, then animated to its sim position.
+    private let disembarkFrom: CGPoint?
+
+    init(size: CGSize,
+         mode: GameMode,
+         spawnAt: CGPoint? = nil,
+         disembarkFrom: CGPoint? = nil) {
+        self.mode          = mode
+        self.spawnAt       = spawnAt
+        self.disembarkFrom = disembarkFrom
         super.init(size: size)
     }
     required init?(coder aDecoder: NSCoder) { fatalError() }
@@ -69,9 +101,16 @@ final class GameScene: SKScene {
         setupHUD()
         setupGestures(in: view)
 
+        // Pre-position the camera so the brief gap before the first snapshot
+        // doesn't show a flash of (0,0) world space.
+        if let from = disembarkFrom {
+            cameraNode.position = from
+            isDisembarking      = true
+        }
+
         switch mode {
         case .singlePlayer:
-            offlineSim   = OfflineSim()
+            offlineSim   = OfflineSim(spawnAt: spawnAt)
             mySessionId  = offlineSim?.sessionId
         case .multiplayer:
             NetworkManager.shared.delegate = self
@@ -344,8 +383,9 @@ final class GameScene: SKScene {
 
         // Info tooltip in the top-left corner. Hidden until something is
         // selected.
-        infoTooltip          = InfoTooltip()
-        infoTooltip.position = CGPoint(x: -hw + 16, y: hh - 16)
+        infoTooltip              = InfoTooltip()
+        infoTooltip.position     = CGPoint(x: -hw + 16, y: hh - 16)
+        infoTooltip.onDockTapped = { [weak self] in self?.beginDocking() }
         cameraNode.addChild(infoTooltip)
     }
 
@@ -425,8 +465,9 @@ final class GameScene: SKScene {
         leanAmount += (target - leanAmount) * 0.12
         if let sid = mySessionId { shipNodes[sid]?.applyLean(leanAmount) }
 
-        // Offline sim drives the same delegate path as the network
-        if mode == .singlePlayer, let sim = offlineSim {
+        // Offline sim drives the same delegate path as the network. Pause
+        // while docking so the player's ship doesn't drift mid-animation.
+        if mode == .singlePlayer, !isDocking, let sim = offlineSim {
             if currentTime - lastSimTime >= simInterval {
                 lastSimTime = currentTime
                 let snap = sim.step(input: localInput)
@@ -441,6 +482,15 @@ final class GameScene: SKScene {
         // (= closest). So far stars get a factor near 1, the closer-feeling
         // nebula gets a small factor, and `localObjectsLayer` (factor 0,
         // unmoved) is the actual playfield.
+        // Camera follows the local ship NODE rather than the latest snapshot
+        // position. The node's position is what's actually animated during
+        // dock (shrink-into-planet) and disembark (rise-from-planet), so
+        // tracking it keeps the camera locked to the visible ship through
+        // both transitions.
+        if let sid = mySessionId, let node = shipNodes[sid] {
+            cameraNode.position = node.position
+        }
+
         let cx = cameraNode.position.x
         let cy = cameraNode.position.y
         nebulaLayer.position   = CGPoint(x: cx * 0.15, y: cy * 0.15)
@@ -476,11 +526,19 @@ final class GameScene: SKScene {
                        planets:        system.planetPositions,
                        ships:          otherShips)
 
-        // Keep the tooltip's distance value in sync as the player flies.
+        // Keep the tooltip's distance value in sync as the player flies, and
+        // gate the Dock button on the close-and-slow conditions.
         if let body = selectedBody {
-            let dx = body.position.x - playerPos.x
-            let dy = body.position.y - playerPos.y
-            infoTooltip.updateDistance(hypot(dx, dy), for: body)
+            let dx       = body.position.x - playerPos.x
+            let dy       = body.position.y - playerPos.y
+            let distance = hypot(dx, dy)
+            infoTooltip.updateDistance(distance, for: body)
+
+            if body.kind == .planet {
+                let isClose = distance <= body.bodyRadius * dockProximityMultiplier
+                let isSlow  = playerNode.velocityMagnitude <= dockMaxSpeed
+                infoTooltip.setDockable(isClose && isSlow)
+            }
         }
     }
 
@@ -492,8 +550,13 @@ final class GameScene: SKScene {
     // MARK: – Touch
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard !isPinching else { return }
+        guard !isPinching, !isDocking else { return }
         for touch in touches {
+            // Dock button (in the tooltip) wins over selection and joystick.
+            if infoTooltip.handleTouch(touch) {
+                continue
+            }
+
             // Tap-to-select takes priority. If the touch lands on a selectable
             // body, consume the touch — don't route it to the joystick or fire
             // button.
@@ -538,6 +601,75 @@ final class GameScene: SKScene {
             }
         }
         return best?.body
+    }
+
+    // MARK: – Docking
+
+    /// Fired by `InfoTooltip` when its active Dock button is tapped. Runs the
+    /// shrink-into-planet animation on the local player ship and then hands
+    /// off to `PlanetScene` once the ship has visually disappeared.
+    private func beginDocking() {
+        guard !isDocking,
+              let body = selectedBody, body.kind == .planet,
+              let sid = mySessionId, let ship = shipNodes[sid]
+        else { return }
+
+        isDocking = true
+
+        // Capture the planet info up front — by the time the animation
+        // finishes, the selection might have been cleared or the node
+        // removed by other game logic.
+        let info = DockedPlanetInfo(
+            displayName:    body.displayName,
+            typeDescription: body.typeDescription,
+            spriteName:      body.spriteName,
+            radius:          body.bodyRadius,
+            worldPosition:   body.position,
+            services:        body.services
+        )
+
+        let shrink   = SKAction.group([
+            .move(to: body.position, duration: 0.8),
+            .scale(to: 0.05,          duration: 0.8),
+            .fadeOut(withDuration:    0.8),
+        ])
+        shrink.timingMode = .easeIn
+
+        let proceed = SKAction.run { [weak self] in
+            self?.presentPlanetScene(info: info)
+        }
+        ship.run(.sequence([shrink, proceed]))
+    }
+
+    private func presentPlanetScene(info: DockedPlanetInfo) {
+        let scene       = PlanetScene(size: size, info: info, gameMode: mode)
+        scene.scaleMode = .resizeFill
+        view?.presentScene(scene, transition: .fade(withDuration: 0.5))
+    }
+
+    /// "Take-off" animation when the player disembarks from a planet. The
+    /// node has just been positioned by the first snapshot at its
+    /// sim-spawn coordinates; we override to the planet center at scale 0,
+    /// then animate back to where the snapshot put it. The completion
+    /// closure clears `isDisembarking` so subsequent snapshots resume
+    /// driving the ship's position normally.
+    private func playDisembarkRise(node: ShipNode, from: CGPoint) {
+        let targetPos = node.position
+        node.position = from
+        node.setScale(0.05)
+        node.alpha    = 0
+
+        let rise = SKAction.group([
+            .move(to: targetPos, duration: 0.9),
+            .scale(to: 1.0,       duration: 0.9),
+            .fadeIn(withDuration: 0.9),
+        ])
+        rise.timingMode = .easeOut
+
+        let clear = SKAction.run { [weak self] in
+            self?.isDisembarking = false
+        }
+        node.run(.sequence([rise, clear]))
     }
 
     private func selectBody(_ body: CelestialBodyNode) {
@@ -651,22 +783,40 @@ final class GameScene: SKScene {
         let activeShips = Set(snapshot.ships.keys)
 
         for (id, data) in snapshot.ships {
+            // While the local player's ship is mid-dock-animation, its
+            // position/scale/alpha are owned by the SKAction. Skipping
+            // the snapshot prevents the simulator from yanking it back
+            // to its sim-tracked world position.
+            if isDocking, id == mySessionId { continue }
+
             if let node = shipNodes[id] {
+                // Same gate during the disembark rise — the animation owns
+                // the local ship's transform until it completes.
+                if isDisembarking, id == mySessionId { continue }
                 node.update(from: data, sunPosition: primarySunPosition)
             } else {
                 let node = ShipNode(isLocalPlayer: id == mySessionId)
                 addChild(node)
                 shipNodes[id] = node
                 node.update(from: data, sunPosition: primarySunPosition)
+
+                // First appearance for the local player while disembarking:
+                // override the sim's position with the planet center, then
+                // animate back to it. The animation completion clears the
+                // `isDisembarking` flag.
+                if isDisembarking, id == mySessionId, let from = disembarkFrom {
+                    playDisembarkRise(node: node, from: from)
+                }
             }
         }
         for id in shipNodes.keys where !activeShips.contains(id) {
             shipNodes.removeValue(forKey: id)?.removeFromParent()
         }
 
-        // Camera follows local ship
+        // Status bars come from the snapshot. Camera-follow is driven by the
+        // ship node directly in `update(_:)` so it tracks dock/disembark
+        // animations smoothly.
         if let s = snapshot.ships[mySessionId] {
-            cameraNode.position = CGPoint(x: CGFloat(s.x), y: CGFloat(s.y))
             setStatus(shieldsPct: CGFloat(s.shields) / 100,
                       hullPct:    CGFloat(s.hull)    / 100)
         }

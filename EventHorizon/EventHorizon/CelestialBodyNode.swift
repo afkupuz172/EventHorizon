@@ -1,6 +1,23 @@
 import SpriteKit
 import UIKit
 
+/// Service categories offered at a docked planet. Each one corresponds to a
+/// menu button + handler in `PlanetScene`. JSON configs list services by raw
+/// value; omit the field to grant all services.
+enum PlanetService: String, CaseIterable {
+    case bar, trade, shipyard, outfitter, bank
+
+    var buttonLabel: String {
+        switch self {
+        case .bar:       return "BAR"
+        case .trade:     return "TRADE"
+        case .shipyard:  return "SHIP VENDOR"
+        case .outfitter: return "OUTFITTER"
+        case .bank:      return "BANK"
+        }
+    }
+}
+
 /// A celestial body in the playfield. Carries the metadata needed for
 /// tap-to-select (kind, display name, radius) and renders the green
 /// four-cornered selection bracket when selected.
@@ -17,6 +34,12 @@ final class CelestialBodyNode: SKNode {
     let displayName:      String
     let typeDescription:  String
     let bodyRadius:       CGFloat
+    /// PNG basename for this body (e.g. "rock_planet"). Used by `PlanetScene`
+    /// to look up an optional `<basename>_landscape.png` for the docked view.
+    let spriteName:       String?
+    /// Services exposed when the player docks here. Empty for non-planet
+    /// bodies; populated by the JSON config (or all services if unset).
+    let services:         Set<PlanetService>
 
     /// `false` for the sun — only planets and asteroids respond to taps.
     var isSelectable: Bool { kind != .sun }
@@ -26,11 +49,15 @@ final class CelestialBodyNode: SKNode {
     init(kind: Kind,
          displayName: String,
          typeDescription: String,
-         radius: CGFloat) {
+         radius: CGFloat,
+         spriteName: String? = nil,
+         services: Set<PlanetService> = []) {
         self.kind            = kind
         self.displayName     = displayName
         self.typeDescription = typeDescription
         self.bodyRadius      = radius
+        self.spriteName      = spriteName
+        self.services        = services
         super.init()
     }
 

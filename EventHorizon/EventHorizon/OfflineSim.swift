@@ -37,9 +37,14 @@ final class OfflineSim {
     private var projCounter  = 0
     private var projectiles: [String: LocalProjectile] = [:]
 
-    init() {
-        x = Float.random(in: -200...200)
-        y = Float.random(in: -200...200)
+    init(spawnAt: CGPoint? = nil) {
+        if let p = spawnAt {
+            x = Float(p.x)
+            y = Float(p.y)
+        } else {
+            x = Float.random(in: -200...200)
+            y = Float.random(in: -200...200)
+        }
     }
 
     /// Advance one server-equivalent tick (1/TICK_RATE seconds) and return the snapshot.

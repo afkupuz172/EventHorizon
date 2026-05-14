@@ -1,0 +1,121 @@
+{
+  "ship": "Arcligh",
+  "sprite": "ship/spacship1",
+  "thumbnail": "thumbnail/spacship1",
+  "attributes": {
+    "category": "Interceptor",
+    "cost": 520000,
+    "shields": 2200,
+    "hull": 500,
+    "required crew": 1,
+    "bunks": 2,
+    "mass": 130,
+    "drag": 2.5,
+    "heat dissipation": 0.74,
+    "fuel capacity": 400,
+    "cargo space": 10,
+    "outfit space": 200,
+    "weapon capacity": 35,
+    "engine capacity": 65,
+    "weapon": {
+      "blast radius": 30,
+      "shield damage": 300,
+      "hull damage": 150,
+      "hit force": 450
+    }
+  },
+  "outfits": [
+    {
+      "name": "Energy Blaster",
+      "count": 2
+    },
+    {
+      "name": "Javelin Mini Pod",
+      "count": 2
+    },
+    {
+      "name": "Javelin",
+      "count": 60
+    },
+    {
+      "name": "nGVF-CC Fuel Cell",
+      "count": 1
+    },
+    {
+      "name": "LP072a Battery Pack",
+      "count": 1
+    },
+    {
+      "name": "D23-QP Shield Generator",
+      "count": 1
+    },
+    {
+      "name": "X2700 Ion Thruster",
+      "count": 1
+    },
+    {
+      "name": "X3200 Ion Steering",
+      "count": 1
+    },
+    {
+      "name": "Hyperdrive",
+      "count": 1
+    }
+  ],
+  "engines": [
+    {
+      "x": -10,
+      "y": 45
+    },
+    {
+      "x": 10,
+      "y": 45
+    }
+  ],
+  "guns": [
+    {
+      "x": -20,
+      "y": 12,
+      "weapon": "Energy Blaster"
+    },
+    {
+      "x": 20,
+      "y": 12,
+      "weapon": "Energy Blaster"
+    },
+    {
+      "x": -44,
+      "y": 10,
+      "weapon": "Javelin Mini Pod"
+    },
+    {
+      "x": 44,
+      "y": 10,
+      "weapon": "Javelin Mini Pod"
+    }
+  ],
+  "leaks": [
+    {
+      "type": "leak",
+      "count": 60,
+      "frequency": 50
+    },
+    {
+      "type": "flame",
+      "count": 80,
+      "frequency": 80
+    }
+  ],
+  "explosions": [
+    {
+      "type": "tiny explosion",
+      "count": 10
+    },
+    {
+      "type": "small explosion",
+      "count": 15
+    }
+  ],
+  "final explode": "final explosion small",
+  "description": "One of the most expensive interceptor-class ships, the Arclight is modern and versatile."
+}

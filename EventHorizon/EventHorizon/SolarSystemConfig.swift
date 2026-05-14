@@ -66,6 +66,11 @@ struct PlanetConfig: Decodable {
 
     /// Optional human-readable name shown in the selection tooltip.
     let displayName: String?
+
+    /// Services this planet offers in the docked view. Each string must be
+    /// the raw value of a `PlanetService` case (`bar`, `trade`, `shipyard`,
+    /// `outfitter`, `bank`). Omit the field entirely to grant all services.
+    let services: [String]?
 }
 
 struct AsteroidConfig: Decodable {

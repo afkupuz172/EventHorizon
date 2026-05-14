@@ -65,7 +65,8 @@ final class SolarSystem {
         let body = CelestialBodyNode(kind:            .sun,
                                      displayName:    displayName,
                                      typeDescription: "Stellar mass",
-                                     radius:          radius)
+                                     radius:          radius,
+                                     spriteName:      sprite)
 
         // Outer corona — large, dim, warm-orange.
         let outer       = SKSpriteNode(texture: Self.makeGlowTexture(
@@ -120,11 +121,22 @@ final class SolarSystem {
             print("[SolarSystem] missing planet sprite \"\(config.sprite).png\"")
             return nil
         }
+        // Convert the JSON service strings (or absence thereof) into a typed
+        // set. Unknown strings are silently dropped; nil means "all services".
+        let services: Set<PlanetService>
+        if let strings = config.services {
+            services = Set(strings.compactMap { PlanetService(rawValue: $0) })
+        } else {
+            services = Set(PlanetService.allCases)
+        }
+
         let body = CelestialBodyNode(
             kind:            .planet,
             displayName:    displayName,
             typeDescription: prettyTypeDescription(from: config.sprite),
-            radius:          CGFloat(config.radius)
+            radius:          CGFloat(config.radius),
+            spriteName:      config.sprite,
+            services:        services
         )
 
         let r = CGFloat(config.radius)
