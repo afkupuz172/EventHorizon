@@ -39,18 +39,20 @@ struct SolarSystemConfig: Decodable {
 }
 
 struct SunConfig: Decodable {
+    /// PNG basename in `Art.scnassets/celestial_bodies/` (no extension).
+    let sprite: String
     /// World position.
     let x: Float
     let y: Float
     /// Visual radius in world units (the rendered sprite is `radius * 2` across).
     let radius: Float
+    /// Optional human-readable name shown in the selection tooltip.
+    let displayName: String?
 }
 
 struct PlanetConfig: Decodable {
-    /// Name keyword used to match a child node inside `Various_Planets.usdz`
-    /// (case-insensitive substring match). Examples: `"continental"`, `"gas"`,
-    /// `"frozen"`, `"lava"`, `"smac"`, `"barren"`.
-    let type: String
+    /// PNG basename in `Art.scnassets/celestial_bodies/` (no extension).
+    let sprite: String
 
     /// Reference point — typically a sun's position. The planet is placed at
     /// `orbitDistance` away from this point, at a random angle picked when
@@ -61,6 +63,9 @@ struct PlanetConfig: Decodable {
 
     /// Visual radius in world units.
     let radius: Float
+
+    /// Optional human-readable name shown in the selection tooltip.
+    let displayName: String?
 }
 
 struct AsteroidConfig: Decodable {

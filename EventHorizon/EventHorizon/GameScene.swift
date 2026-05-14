@@ -569,15 +569,45 @@ final class GameScene: SKScene {
             joystick.setThumb(offset: offset)
 
             let dead: CGFloat = 12
+            let mag           = hypot(offset.x, offset.y)
+            guard mag > dead else {
+                setInput {
+                    $0.thrust    = false
+                    $0.turnLeft  = false
+                    $0.turnRight = false
+                }
+                continue
+            }
+
+            // The joystick now controls FACING: deflect in any direction and
+            // the ship rotates to point that way and thrusts forward.
+            //
+            // For the angular difference we use atan2(sin(d), cos(d)) — this
+            // always returns a value in (−π, π] in a single step, regardless
+            // of the input ranges. The previous `while`-loop normalization
+            // was both slow (could loop many times if the sim's angle drifts
+            // far from zero) and brittle at exactly ±π, where a tiny jitter
+            // could flip the chosen turn direction frame-to-frame.
+            let targetAngle = atan2(offset.y, offset.x)
+            let current     = currentPlayerHeading()
+            let rawDiff     = targetAngle - current
+            let diff        = atan2(sin(rawDiff), cos(rawDiff))
+
+            // Slightly wider dead zone (≈5.7°) so the ship settles cleanly
+            // instead of micro-correcting when it's already pointing the
+            // right way.
+            let angleDead: CGFloat = 0.10
             setInput {
-                $0.thrust    = offset.y >  dead
-                // Inverted: pushing the stick right turns the ship left,
-                // pushing left turns it right. Matches player expectation
-                // where the stick "leans into" the desired direction.
-                $0.turnLeft  = offset.x >  dead
-                $0.turnRight = offset.x < -dead
+                $0.thrust    = true                    // any deflection = forward
+                $0.turnRight = diff >  angleDead       // server: turnRight increments angle (CCW)
+                $0.turnLeft  = diff < -angleDead       // server: turnLeft decrements angle (CW)
             }
         }
+    }
+
+    private func currentPlayerHeading() -> CGFloat {
+        guard let sid = mySessionId, let ship = shipNodes[sid] else { return 0 }
+        return ship.heading
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {

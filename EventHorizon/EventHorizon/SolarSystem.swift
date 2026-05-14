@@ -26,8 +26,9 @@ final class SolarSystem {
     var sunPositions:    [CGPoint] { bodies.filter { $0.kind == .sun    }.map(\.position) }
     var planetPositions: [CGPoint] { bodies.filter { $0.kind == .planet }.map(\.position) }
 
-    private var sunTexture: SKTexture?
-    private var planetTextureByType: [String: SKTexture] = [:]
+    /// Cached PNG textures keyed by the sprite basename used in the JSON
+    /// config. Loaded lazily on first reference.
+    private var spriteTextures: [String: SKTexture] = [:]
     private var asteroidTextures: [SKTexture] = []
     private var asteroidCounter = 0
 
@@ -46,8 +47,11 @@ final class SolarSystem {
 
     private func installSuns(into layer: SKNode) {
         for (i, sunCfg) in config.suns.enumerated() {
-            let body = makeSunBody(radius: CGFloat(sunCfg.radius),
-                                   displayName: "Star \(i + 1)")
+            let body = makeSunBody(
+                sprite:      sunCfg.sprite,
+                radius:      CGFloat(sunCfg.radius),
+                displayName: sunCfg.displayName ?? "Star \(i + 1)"
+            )
             body.position  = CGPoint(x: CGFloat(sunCfg.x), y: CGFloat(sunCfg.y))
             body.zPosition = 0
             layer.addChild(body)
@@ -55,7 +59,9 @@ final class SolarSystem {
         }
     }
 
-    private func makeSunBody(radius: CGFloat, displayName: String) -> CelestialBodyNode {
+    private func makeSunBody(sprite: String,
+                             radius: CGFloat,
+                             displayName: String) -> CelestialBodyNode {
         let body = CelestialBodyNode(kind:            .sun,
                                      displayName:    displayName,
                                      typeDescription: "Stellar mass",
@@ -79,9 +85,9 @@ final class SolarSystem {
         inner.alpha     = 0.65
         body.addChild(inner)
 
-        if let texture = bakedSunTexture() {
+        if let texture = loadSpriteTexture(named: sprite) {
             let disc  = SKSpriteNode(texture: texture)
-            disc.size = CGSize(width: radius * 2, height: radius * 2)
+            disc.size = sizePreservingAspect(of: texture, width: radius * 2)
             body.addChild(disc)
         }
         return body
@@ -96,17 +102,10 @@ final class SolarSystem {
                 x: CGFloat(p.centerX) + cos(angle) * CGFloat(p.orbitDistance),
                 y: CGFloat(p.centerY) + sin(angle) * CGFloat(p.orbitDistance)
             )
-            // Direction from this planet toward the (assumed) sun.
-            let dx  = CGFloat(p.centerX) - position.x
-            let dy  = CGFloat(p.centerY) - position.y
-            let mag = sqrt(dx * dx + dy * dy)
-            let sunDir = mag > 0.001
-                ? CGPoint(x: dx / mag, y: dy / mag)
-                : CGPoint(x: 1, y: 0)
-
-            guard let body = makePlanetBody(config: p,
-                                            sunDirection: sunDir,
-                                            displayName: "Planet \(i + 1)")
+            guard let body = makePlanetBody(
+                config: p,
+                displayName: p.displayName ?? "Planet \(i + 1)"
+            )
             else { continue }
             body.position  = position
             body.zPosition = 1
@@ -116,17 +115,15 @@ final class SolarSystem {
     }
 
     private func makePlanetBody(config: PlanetConfig,
-                                sunDirection: CGPoint,
                                 displayName: String) -> CelestialBodyNode? {
-        guard let texture = bakedPlanetTexture(for: config.type, sunDirection: sunDirection)
-        else {
-            print("[SolarSystem] no planet found matching \"\(config.type)\"")
+        guard let texture = loadSpriteTexture(named: config.sprite) else {
+            print("[SolarSystem] missing planet sprite \"\(config.sprite).png\"")
             return nil
         }
         let body = CelestialBodyNode(
             kind:            .planet,
             displayName:    displayName,
-            typeDescription: "\(config.type.capitalized) planet",
+            typeDescription: prettyTypeDescription(from: config.sprite),
             radius:          CGFloat(config.radius)
         )
 
@@ -140,10 +137,46 @@ final class SolarSystem {
         body.addChild(atmos)
 
         let disc  = SKSpriteNode(texture: texture)
-        disc.size = CGSize(width: r * 2, height: r * 2)
+        disc.size = sizePreservingAspect(of: texture, width: r * 2)
         body.addChild(disc)
 
         return body
+    }
+
+    /// Compute a render size that preserves the texture's intrinsic aspect
+    /// ratio. Prevents non-square PNGs from being stretched into ovals.
+    private func sizePreservingAspect(of texture: SKTexture, width: CGFloat) -> CGSize {
+        let texSize = texture.size()
+        guard texSize.width > 0 else {
+            return CGSize(width: width, height: width)
+        }
+        let aspect = texSize.height / texSize.width
+        return CGSize(width: width, height: width * aspect)
+    }
+
+    /// `"rock_planet"` → `"Rock planet"`.
+    private func prettyTypeDescription(from sprite: String) -> String {
+        let words = sprite.replacingOccurrences(of: "_", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
+    }
+
+    /// Load a PNG by basename from `Art.scnassets/celestial_bodies/`. Cached
+    /// so two suns of the same sprite share one GPU texture.
+    private func loadSpriteTexture(named name: String) -> SKTexture? {
+        if let cached = spriteTextures[name] { return cached }
+        guard let url = Bundle.main.url(
+            forResource:  name,
+            withExtension: "png",
+            subdirectory: "Art.scnassets/celestial_bodies"
+        ),
+        let image = UIImage(contentsOfFile: url.path)
+        else {
+            print("[SolarSystem] missing PNG: Art.scnassets/celestial_bodies/\(name).png")
+            return nil
+        }
+        let texture = SKTexture(image: image)
+        spriteTextures[name] = texture
+        return texture
     }
 
     // MARK: – Asteroids
@@ -186,45 +219,8 @@ final class SolarSystem {
         }
     }
 
-    // MARK: – Texture baking
-
-    private func bakedSunTexture() -> SKTexture? {
-        if let t = sunTexture { return t }
-        guard let model = CelestialBodyAssets.shared.sunNodeClone() else { return nil }
-        let t = renderStillTexture(
-            model:             model,
-            tilt:              SCNVector3(0.20, 0, 0),
-            textureSize:       512,
-            keyLightDirection: nil,                    // self-emissive
-            ambientIntensity:  250
-        )
-        sunTexture = t
-        return t
-    }
-
-    private func bakedPlanetTexture(for type: String, sunDirection: CGPoint) -> SKTexture? {
-        if let cached = planetTextureByType[type] { return cached }
-        guard let model = CelestialBodyAssets.shared.planetNodeClone(matching: type) else { return nil }
-
-        // SCN scene X-Y axes align with screen X-Y (camera looks down -Z).
-        // Put the key light along the sun direction so the planet's lit side
-        // faces the world-space sun.
-        let lightDir: (Float, Float, Float) = (
-            Float(sunDirection.x) * 6,
-            Float(sunDirection.y) * 6,
-            4
-        )
-        let t = renderStillTexture(
-            model:             model,
-            tilt:              SCNVector3(0.30, 0, 0),
-            textureSize:       256,
-            keyLightDirection: lightDir,
-            keyLightIntensity: 950,
-            ambientIntensity:  140
-        )
-        planetTextureByType[type] = t
-        return t
-    }
+    // MARK: – Asteroid texture baking
+    // (Sun and planet are PNG-based; only asteroids still come from USDZ.)
 
     private func bakeAsteroidTexturesIfNeeded() {
         guard asteroidTextures.isEmpty else { return }

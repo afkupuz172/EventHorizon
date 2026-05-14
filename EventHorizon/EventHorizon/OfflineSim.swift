@@ -49,6 +49,11 @@ final class OfflineSim {
 
         if input.turnLeft  { angle -= TURN_SPEED * dt }
         if input.turnRight { angle += TURN_SPEED * dt }
+        // Keep heading bounded to (−π, π]. Otherwise after enough ticks the
+        // angle drifts to large values, hurting floating-point precision and
+        // forcing the joystick's angular-diff math to wrap many times.
+        if angle >  .pi { angle -= 2 * .pi }
+        if angle < -.pi { angle += 2 * .pi }
 
         thrusting = input.thrust
         if thrusting {

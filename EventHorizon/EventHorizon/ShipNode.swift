@@ -1,5 +1,6 @@
 import SpriteKit
 import SceneKit
+import simd
 
 final class ShipNode: SKNode {
 
@@ -14,6 +15,10 @@ final class ShipNode: SKNode {
     private weak var leanNode:    SCNNode?   // roll  — rotates around scene +Y (nose axis)
     private weak var centerLight: SCNNode?   // re-aimed each frame to point from map origin
 
+    /// PNG ship's lighting attribute. We keep a reference to the sprite so
+    /// `updatePNGLighting` can push the new direction value each frame.
+    private weak var pngLitSprite: SKSpriteNode?
+
     /// Distance from ship center to where the thrust emitter mounts.
     private var thrustDistance: CGFloat = 40
 
@@ -22,7 +27,7 @@ final class ShipNode: SKNode {
     /// wedge.
     private(set) var heading: CGFloat = 0
 
-    init(isLocalPlayer: Bool, metadata: ShipMetadata = .spaceship1) {
+    init(isLocalPlayer: Bool, metadata: ShipMetadata = .ringship) {
         self.isLocalPlayer = isLocalPlayer
         self.metadata      = metadata
         super.init()
@@ -41,11 +46,76 @@ final class ShipNode: SKNode {
     // MARK: – Setup
 
     private func setupVisual() {
-        if let node3D = makeShipSceneNode() {
-            visual = node3D
-        } else {
-            visual = makeFallback2D()
+        switch metadata.assetKind {
+        case .usdc:
+            if let node3D = makeShipSceneNode() {
+                visual = node3D
+                return
+            }
+        case .png:
+            if let sprite = makeShipSpriteNode() {
+                visual = sprite
+                return
+            }
         }
+        visual = makeFallback2D()
+    }
+
+    /// Load the ship's PNG and wrap it in a sized `SKSpriteNode`. The PNG is
+    /// assumed to point nose-up; heading is applied via `visual.zRotation` in
+    /// `update(from:)`. An `SKShader` is attached to give the sprite a
+    /// directional shadow side based on the sun's world position.
+    private func makeShipSpriteNode() -> SKSpriteNode? {
+        guard let url = Bundle.main.url(forResource: metadata.assetName,
+                                        withExtension: "png",
+                                        subdirectory: metadata.assetSubdirectory),
+              let image = UIImage(contentsOfFile: url.path)
+        else {
+            print("[ShipNode] missing PNG: \(metadata.assetSubdirectory)/\(metadata.assetName).png")
+            return nil
+        }
+        let sprite  = SKSpriteNode(texture: SKTexture(image: image))
+        sprite.size = metadata.viewportSize
+
+        attachLightingShader(to: sprite)
+        return sprite
+    }
+
+    /// Per-pixel directional darkening. Pixels on the side facing AWAY from
+    /// the sun get dimmed; pixels facing toward stay full-bright. The light
+    /// direction is per-node (each ship has its own sun-relative vector),
+    /// so we use an `SKAttribute` rather than an `SKUniform` — attribute
+    /// values pushed via `setValue(_:forAttribute:)` propagate reliably,
+    /// where `SKUniform.vectorFloat2Value` updates sometimes don't.
+    private func attachLightingShader(to sprite: SKSpriteNode) {
+        let shader = SKShader(source: """
+            void main() {
+                vec4 base = texture2D(u_texture, v_tex_coord);
+                if (base.a < 0.01) {
+                    gl_FragColor = base;
+                    return;
+                }
+                vec2 fromCenter = v_tex_coord - vec2(0.5);
+                float d = length(fromCenter);
+                if (d < 0.001) {
+                    gl_FragColor = base;
+                    return;
+                }
+                vec2 norm    = fromCenter / d;
+                float facing = dot(norm, a_lightDir);          // -1 = shadow, +1 = lit
+                float t      = 0.5 + 0.5 * facing;             // 0..1
+                float intensity = mix(0.25, 1.0, t);           // 25% on shadow side, full on lit
+                gl_FragColor = vec4(base.rgb * intensity, base.a);
+            }
+            """)
+        shader.attributes = [SKAttribute(name: "a_lightDir", type: .vectorFloat2)]
+        sprite.shader     = shader
+        // Initial direction: light from +X in texture space. Sets the right
+        // half lit, left half dark — useful for sanity-checking the shader
+        // is running before the first per-frame update.
+        sprite.setValue(SKAttributeValue(vectorFloat2: vector_float2(1, 0)),
+                        forAttribute: "a_lightDir")
+        pngLitSprite = sprite
     }
 
     /// Loads the USDC asset, orients it, attaches an orthographic top-down
@@ -248,10 +318,15 @@ final class ShipNode: SKNode {
         position = CGPoint(x: CGFloat(ship.x), y: CGFloat(ship.y))
         heading  = CGFloat(ship.angle)
 
-        // Heading: rotate the 3D model around scene +Z so the nose (which sits
-        // at scene +Y after orientation) points along the world heading.
+        // Heading: for the 3D path, rotate the model around scene +Z inside
+        // the SCN scene. For the 2D PNG path, there's no SCN headingNode —
+        // we rotate the sprite directly.
         let yaw = ship.angle - .pi / 2
-        headingNode?.eulerAngles.z = yaw
+        if let headingNode = headingNode {
+            headingNode.eulerAngles.z = yaw
+        } else {
+            visual.zRotation = CGFloat(yaw)
+        }
 
         // Thrust emitter follows the ship's tail in world space. The emitter
         // is a 2D node, so we compute its rotated position and emission angle
@@ -267,8 +342,31 @@ final class ShipNode: SKNode {
                        sunX:  Float(sunPosition.x),
                        sunY:  Float(sunPosition.y))
 
+        updatePNGLighting(sunPosition: sunPosition)
+
         alpha    = ship.dead ? 0 : 1
         isHidden = false
+    }
+
+    /// Recompute the sun direction in the sprite's texture frame and push it
+    /// to the lighting shader. The sprite rotates with heading; the shadow
+    /// side must stay anchored to the world-space sun direction, so the
+    /// value changes whenever heading or relative sun position changes.
+    private func updatePNGLighting(sunPosition: CGPoint) {
+        guard let sprite = pngLitSprite else { return }
+        let dx = sunPosition.x - position.x
+        let dy = sunPosition.y - position.y
+        let sunWorldAngle = atan2(dy, dx)
+        // Sprite is rotated by visual.zRotation; convert sun direction into
+        // the texture's local frame.
+        let texAngle = sunWorldAngle - sprite.zRotation
+        sprite.setValue(
+            SKAttributeValue(vectorFloat2: vector_float2(
+                Float(cos(texAngle)),
+                Float(sin(texAngle))
+            )),
+            forAttribute: "a_lightDir"
+        )
     }
 
     /// Aim the directional light inside the ship's SCN scene so it points
@@ -295,8 +393,9 @@ final class ShipNode: SKNode {
                    localFront: SCNVector3(0, 0, -1))
     }
 
-    /// Banks the 3D model around its nose axis (roll) when turning, giving the
-    /// classic "lean into turns" feel. No-op on the 2D fallback.
+    /// Banks the 3D ship around its nose axis (roll) when turning. No-op on
+    /// the PNG ship — a flat sprite can't roll in any way that reads as a
+    /// bank, so we just leave it alone.
     func applyLean(_ amount: Float) {
         // Negative sign so the inside wing dips into the turn (lean into the
         // turn, not out of it).

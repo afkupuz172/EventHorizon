@@ -3,14 +3,17 @@
   "lightingEnvironment": "HDR_multi_nebulae",
   "suns": [
     {
-      "x":      0,
-      "y":      0,
-      "radius": 420
+      "sprite":      "yellow_sun",
+      "displayName": "Sol",
+      "x":           0,
+      "y":           0,
+      "radius":      420
     }
   ],
   "planets": [
     {
-      "type":          "continental",
+      "sprite":        "rock_planet",
+      "displayName":   "Hadrian",
       "centerX":       0,
       "centerY":       0,
       "orbitDistance": 2600,
