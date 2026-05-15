@@ -1,0 +1,36 @@
+{
+    "engines": [
+        {
+            "id": "plasma_thruster",
+            "display_name": "Plasma Thruster",
+            "category": "thruster",
+            "series": "Engines",
+            "index": 3010,
+            "cost": 85000,
+            "thumbnail": "Art/outfit/plasma_thruster",
+            "mass": 35,
+            "outfit_space": -35,
+            "engine_capacity": -30,
+            "thrust": 100,
+            "thrusting_energy": 10,
+            "thrusting_heat": 3,
+            "description": "A linear plasma drive. Hot, thirsty, and very effective at moving a ship forward in a hurry."
+        },
+        {
+            "id": "plasma_steering",
+            "display_name": "Plasma Steering",
+            "category": "steering",
+            "series": "Engines",
+            "index": 3060,
+            "cost": 55000,
+            "thumbnail": "Art/outfit/plasma_steering",
+            "mass": 25,
+            "outfit_space": -25,
+            "engine_capacity": -20,
+            "turn": 100,
+            "turning_energy": 5,
+            "turning_heat": 2,
+            "description": "Vectored plasma jets that yaw the hull on demand. Sips power compared to its main-drive sibling."
+        }
+    ]
+}

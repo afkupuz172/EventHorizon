@@ -31,9 +31,84 @@ struct SaveProfile: Codable {
     /// Faction → standing in [-100, 100]. Stub for now; gameplay hook later.
     var reputation: [String: Int] = [:]
 
+    /// Per-hardpoint weapon overrides. Keys are mount slot identifiers
+    /// (`"turret_<i>"`, `"gun_<i>"`) into the ship's JSON; values are
+    /// outfit IDs. Unspecified slots fall back to the JSON's default
+    /// `weapon` field for that mount.
+    var mountAssignments: [String: String] = [:]
+
     // Timestamps
     var createdAtUnix:   TimeInterval
     var lastSavedAtUnix: TimeInterval
+
+    /// Custom decode so the optional `mount_assignments` key can be
+    /// absent from older save files without failing the load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version          = try c.decodeIfPresent(Int.self,            forKey: .version) ?? SaveProfile.currentVersion
+        mode             = try c.decode(Mode.self,                    forKey: .mode)
+        credits          = try c.decode(Int.self,                     forKey: .credits)
+        captainName      = try c.decode(String.self,                  forKey: .captainName)
+        shipName         = try c.decode(String.self,                  forKey: .shipName)
+        currentSystem    = try c.decode(String.self,                  forKey: .currentSystem)
+        currentPlanetID  = try c.decode(String.self,                  forKey: .currentPlanetID)
+        shipID           = try c.decode(String.self,                  forKey: .shipID)
+        installedOutfits = try c.decode([String: Int].self,           forKey: .installedOutfits)
+        reputation       = try c.decodeIfPresent([String: Int].self,  forKey: .reputation)       ?? [:]
+        mountAssignments = try c.decodeIfPresent([String: String].self, forKey: .mountAssignments) ?? [:]
+        createdAtUnix    = try c.decode(TimeInterval.self,            forKey: .createdAtUnix)
+        lastSavedAtUnix  = try c.decode(TimeInterval.self,            forKey: .lastSavedAtUnix)
+    }
+
+    init(version: Int = SaveProfile.currentVersion,
+         mode: Mode,
+         captainName: String,
+         shipName: String,
+         currentSystem: String,
+         currentPlanetID: String,
+         shipID: String,
+         credits: Int,
+         installedOutfits: [String: Int],
+         reputation: [String: Int] = [:],
+         mountAssignments: [String: String] = [:],
+         createdAtUnix: TimeInterval,
+         lastSavedAtUnix: TimeInterval) {
+        self.version          = version
+        self.mode             = mode
+        self.captainName      = captainName
+        self.shipName         = shipName
+        self.currentSystem    = currentSystem
+        self.currentPlanetID  = currentPlanetID
+        self.shipID           = shipID
+        self.credits          = credits
+        self.installedOutfits = installedOutfits
+        self.reputation       = reputation
+        self.mountAssignments = mountAssignments
+        self.createdAtUnix    = createdAtUnix
+        self.lastSavedAtUnix  = lastSavedAtUnix
+    }
+
+    /// Explicit snake_case keys so the on-disk format matches the rest of
+    /// the game's JSON. **Critical:** we do NOT pair this with a key
+    /// decoding/encoding strategy — the strategy applies recursively to
+    /// dictionary keys, which would mangle `installed_outfits`'s inner
+    /// snake_case outfit IDs (e.g. `heavy_laser_turret`) into camelCase.
+    /// Explicit keys here cover the top-level only.
+    enum CodingKeys: String, CodingKey {
+        case version
+        case mode
+        case credits
+        case reputation
+        case captainName       = "captain_name"
+        case shipName          = "ship_name"
+        case currentSystem     = "current_system"
+        case currentPlanetID   = "current_planet_id"
+        case shipID            = "ship_id"
+        case installedOutfits  = "installed_outfits"
+        case mountAssignments  = "mount_assignments"
+        case createdAtUnix     = "created_at_unix"
+        case lastSavedAtUnix   = "last_saved_at_unix"
+    }
 
     /// Stable on-disk filename derived from the captain name. Spaces and
     /// punctuation collapsed so the OS file system doesn't choke.
@@ -74,7 +149,10 @@ final class SaveProfileStore {
         dirURL(for: profile.mode).appendingPathComponent("\(profile.fileSlug).json")
     }
 
-    /// Lists profiles for a given mode, newest-saved first.
+    /// Lists profiles for a given mode, newest-saved first. JSON keys are
+    /// driven entirely by `SaveProfile.CodingKeys` — no
+    /// `keyDecodingStrategy` because it would also mangle the inner
+    /// outfit-ID keys inside `installed_outfits`.
     func list(mode: SaveProfile.Mode) -> [SaveProfile] {
         let dir = dirURL(for: mode)
         guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }

@@ -2,43 +2,54 @@ import Foundation
 
 /// Gameplay-side description of a ship, loaded from `data/ships/<id>.json`.
 ///
-/// Lots of fields in the source JSON aren't used by the game yet (heat
-/// dissipation, drag, weapon capacity, ramscoop, hyperdrive, etc.) — those
-/// keys are simply ignored by `Decodable`. As gameplay catches up, add
-/// fields to `Attributes` and they start parsing automatically.
+/// JSON keys are snake_case; the loader applies
+/// `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase` so the Swift
+/// properties stay camelCase. Many fields in the source JSON aren't used
+/// by the game yet (heat dissipation, drag, weapon capacity, ramscoop,
+/// hyperdrive, etc.) — those keys are simply ignored by `Decodable`.
 struct ShipDef: Decodable {
 
-    /// The JSON's `"ship"` field — the human-readable name. The ship's
-    /// canonical ID (used as the lookup key) comes from the JSON FILE
-    /// basename, not from this field.
+    /// Plain-text display name — JSON's `"ship"` field.
     let ship: String
+
+    /// Snake_case slug — matches the JSON file basename and is the lookup
+    /// key in `ShipRegistry`. Optional in JSON for backward compatibility
+    /// (older files omit it).
+    let id: String?
 
     let attributes: Attributes
     let outfits:    [InstalledOutfit]?
 
     /// Faction this hull is flown by. Drives whether the player's projectiles
     /// can damage it without first being selected: hostile factions are
-    /// fair game, neutral/friendly must be selected. Default is `"neutral"`.
+    /// fair game, neutral/friendly must be selected.
     let faction: String?
 
-    /// Body-local positions (origin = ship center, +y = nose) where turret
-    /// weapons emit their beams/projectiles. Cycled through when more
-    /// turret instances are installed than there are hardpoints. JSON key
-    /// is `"turret hardpoints"`.
-    let turretHardpoints: [Hardpoint]?
+    /// Turret hardpoints — body-local position + which weapon is mounted
+    /// at that slot. The contact/beam system consumes one installed copy
+    /// of the named weapon per occupied mount.
+    let turrets: [Hardpoint]?
 
+    /// Fixed-mount (gun) hardpoints — body-local position + weapon.
+    /// Guns fire straight along the ship's heading; they don't track.
+    let guns: [Hardpoint]?
+
+    /// Engine mounts — body-local position + which thruster outfit is
+    /// installed in that slot. Drives thrust-emitter placement on the
+    /// rendered ship sprite.
+    let engines: [Hardpoint]?
+
+    /// A single mount: body-local coordinate plus an optional weapon
+    /// (turrets/guns) or engine (engines) reference. Mounts without a
+    /// matching field are ignored by their respective subsystems.
     struct Hardpoint: Decodable {
         let x: Double
         let y: Double
+        let weapon: String?
+        let engine: String?
     }
 
-    enum CodingKeys: String, CodingKey {
-        case ship, attributes, outfits, faction
-        case turretHardpoints = "turret hardpoints"
-    }
-
-    /// Convenience accessor — display name is just `ship`, but `displayName`
-    /// reads better at call sites.
+    /// Convenience accessor — display name reads cleaner at call sites.
     var displayName: String { ship }
 
     struct Attributes: Decodable {
@@ -54,25 +65,21 @@ struct ShipDef: Decodable {
         let weaponCapacity:  Double?
         let engineCapacity:  Double?
         let heatDissipation: Double?
+        /// Pool of energy this hull holds at full charge, in points.
+        /// Outfits may also contribute to this total at runtime. JSON key:
+        /// `"energy_capacity"`. Defaults to 100 when unset.
+        let energyCapacity: Double?
+        /// Passive energy regeneration rate in points per second. Outfits
+        /// (reactors, batteries) typically amplify this. JSON key:
+        /// `"energy_recharge"`. Defaults to 1 when unset.
+        let energyRecharge: Double?
         /// Radius (in world units) of the circular physics body used for
-        /// projectile collisions. Optional — defaults to a fraction of the
-        /// render radius when absent (`ShipMetadata.collisionRadius`).
+        /// projectile collisions.
         let collisionRadius: Double?
-
-        enum CodingKeys: String, CodingKey {
-            case category, cost, shields, hull, mass, drag
-            case fuelCapacity     = "fuel capacity"
-            case cargoSpace       = "cargo space"
-            case outfitSpace      = "outfit space"
-            case weaponCapacity   = "weapon capacity"
-            case engineCapacity   = "engine capacity"
-            case heatDissipation  = "heat dissipation"
-            case collisionRadius  = "collision radius"
-        }
     }
 
-    /// One entry in the ship's installed-outfits list. The name is the
-    /// lookup key into `OutfitRegistry`.
+    /// One entry in the ship's installed-outfits list. `name` is the
+    /// snake_case outfit slug (lookup key into `OutfitRegistry`).
     struct InstalledOutfit: Decodable {
         let name:  String
         let count: Int
@@ -81,11 +88,6 @@ struct ShipDef: Decodable {
 
 /// Loads every `*.json` resource in the bundle, keeps the ones that parse
 /// as a `ShipDef`, and exposes them keyed by JSON-file basename.
-///
-/// Because Xcode's synchronized groups flatten loose resource folders to
-/// the bundle root, we can't enumerate by path — we just walk every JSON
-/// and let `JSONDecoder` reject non-ship files. Adding a new ship is a
-/// one-step drop-in: put `<id>.json` somewhere under `data/ships/`.
 @MainActor
 final class ShipRegistry {
 
@@ -109,17 +111,18 @@ final class ShipRegistry {
             return
         }
         let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         for url in urls {
             guard let data = try? Data(contentsOf: url) else { continue }
             do {
                 let def = try decoder.decode(ShipDef.self, from: data)
-                let id  = url.deletingPathExtension().lastPathComponent
+                let id  = def.id ?? url.deletingPathExtension().lastPathComponent
                 definitions[id] = def
                 print("[ShipRegistry] loaded ship \"\(id)\" — \(def.displayName)")
             } catch {
-                // Not a ship JSON. Silent — system / outfit / nebula configs
-                // all hit this path on every load. If you need to debug a
-                // file that *should* parse but doesn't, log the error here.
+                // Not a ship JSON. Silent — system / outfit configs all hit
+                // this path on every load. If a file that *should* parse
+                // doesn't, log the error here for debugging.
             }
         }
     }

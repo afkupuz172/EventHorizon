@@ -71,6 +71,17 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
     private var hullFill:        SKShapeNode!
     private var fuelBar:         SKShapeNode!
     private var fuelFill:        SKShapeNode!
+    private var energyBar:       SKShapeNode!
+    private var energyFill:      SKShapeNode!
+    private var heatBar:         SKShapeNode!
+    private var heatFill:        SKShapeNode!
+    // Per-row labels rewritten by `setStatus` so the numbers track the
+    // ship's current state (not the max value baked in at scene start).
+    private var shieldLabel:     SKLabelNode!
+    private var hullLabel:       SKLabelNode!
+    private var fuelLabel:       SKLabelNode!
+    private var energyLabel:     SKLabelNode!
+    private var heatLabel:       SKLabelNode!
     private let hudBarWidth:     CGFloat = 140
 
     // ── Zoom ───────────────────────────────────────────────────────────────────
@@ -206,8 +217,82 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         switch mode {
         case .singlePlayer:
-            offlineSim   = OfflineSim(spawnAt: spawnAt)
-            mySessionId  = offlineSim?.sessionId
+            let sim         = OfflineSim(spawnAt: spawnAt)
+            // Seed the sim with the active hull's energy/heat profile.
+            // Outfit contributions to capacity/recharge will live here when
+            // the registry grows those fields — currently only the ship
+            // JSON drives the values.
+            let def         = PlayerProfile.shared.currentShipDef
+            // Aggregate every per-outfit contribution that the ship cares
+            // about. Each outfit's `count` multiplies its stat (two Plasma
+            // Cores → +2000 energy capacity, +20 recharge, etc.).
+            var maxEnergy     = Float(def?.attributes.energyCapacity ?? 100)
+            var energyReg     = Float(def?.attributes.energyRecharge ?? 1)
+            var maxShields    = Float(def?.attributes.shields        ?? 100)
+            var shieldReg:    Float = 0       // ship base shield regen not yet in JSON
+            var totalThrust:  Float = 0
+            var totalTurn:    Float = 0
+            var outfitMass:   Float = 0
+            var thrustDrain:  Float = 0
+            var thrustHeat:   Float = 0
+            var turnDrain:    Float = 0
+            var turnHeat:     Float = 0
+            var passiveDrain: Float = 0
+            var passiveHeat:  Float = 0
+            // Capacity-style contributions (energy pool, shield pool,
+            // heat output, mass) scale with every installed copy, even
+            // those sitting in inventory.
+            for (id, count) in PlayerProfile.shared.installedOutfits {
+                guard let o = OutfitRegistry.shared.outfit(id: id) else { continue }
+                let n = Float(count)
+                maxEnergy    += Float(o.energyCapacity    ?? 0) * n
+                energyReg    += Float(o.energyRecharge    ?? 0) * n
+                maxShields   += Float(o.shieldCapacity    ?? 0) * n
+                shieldReg    += Float(o.shieldRecharge    ?? 0) * n
+                outfitMass   += Float(o.mass              ?? 0) * n
+                passiveDrain += Float(o.energyConsumption ?? 0) * n
+                passiveHeat  += Float(o.heatGeneration    ?? 0) * n
+            }
+            // Thrust/turn (and the active drains they trigger) only
+            // count from engines actually MOUNTED in an engine slot.
+            // Unmounted thrusters sitting in inventory don't push.
+            for (slot, oid) in PlayerProfile.shared.mountAssignments
+                where slot.hasPrefix("engine_") {
+                guard let o = OutfitRegistry.shared.outfit(id: oid) else { continue }
+                totalThrust += Float(o.thrust          ?? 0)
+                totalTurn   += Float(o.turn            ?? 0)
+                thrustDrain += Float(o.thrustingEnergy ?? 0)
+                thrustHeat  += Float(o.thrustingHeat   ?? 0)
+                turnDrain   += Float(o.turningEnergy   ?? 0)
+                turnHeat    += Float(o.turningHeat     ?? 0)
+            }
+            let shipMass    = Float(def?.attributes.mass            ?? 100)
+            let totalMass   = shipMass + outfitMass
+            let maxHull     = Float(def?.attributes.hull            ?? 100)
+            let dissipation = Float(def?.attributes.heatDissipation ?? 0.1)
+            // ES-style maxHeat / dissipation scaling: 60 heat units per ton
+            // is the threshold; dissipation is mass × heat_dissipation per
+            // second so heavier ships shed proportionally more heat.
+            let maxHeat     = max(1, totalMass * 60)
+            let dissipateHz = max(0.01, totalMass * dissipation)
+            sim.configureShipParams(maxEnergy:           maxEnergy,
+                                    energyRecharge:      energyReg,
+                                    maxHeat:             maxHeat,
+                                    heatDissipationRate: dissipateHz,
+                                    maxShields:          maxShields,
+                                    shieldRecharge:      shieldReg,
+                                    maxHull:             maxHull,
+                                    totalThrust:         totalThrust,
+                                    totalTurn:           totalTurn,
+                                    totalMass:           totalMass,
+                                    thrustingEnergyDrain: thrustDrain,
+                                    thrustingHeatGen:     thrustHeat,
+                                    turningEnergyDrain:   turnDrain,
+                                    turningHeatGen:       turnHeat,
+                                    passiveEnergyDrain:   passiveDrain,
+                                    passiveHeatGen:       passiveHeat)
+            offlineSim   = sim
+            mySessionId  = sim.sessionId
         case .multiplayer:
             NetworkManager.shared.delegate = self
             NetworkManager.shared.connect()
@@ -275,7 +360,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         // layer follows the camera at 92%, so the visible local-coords window
         // is small (≈ ±1800) regardless of where the player is. A tight spread
         // gives high visible density with few total nodes.
-        scatter(farStarLayer, count: 2000, spread: 1000,
+        scatter(farStarLayer, count: 4000, spread: 2000,
                 scaleRange: 0.05...0.27,
                 alphaRange: 0.42...0.55,
                 variants:   [.pinprick, .mediumWhite, .pinprick, .pinprick,
@@ -286,7 +371,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         // Mid field — sprite-node pinpricks plus a sprinkle of bloom stars
         // and the occasional warm tinted giant for color variety.
-        scatter(midStarLayer, count: 2000, spread: 3000,
+        scatter(midStarLayer, count: 3000, spread: 3000,
                 scaleRange: 0.24...0.42,
                 alphaRange: 0.42...0.95,
                 variants:   [.pinprick, .pinprick, .pinprick, .pinprick,
@@ -298,7 +383,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         // Near field — hero stars with bloom and diffraction spikes. Sparse
         // by design; these are accent lights, not background.
-        scatter(nearStarLayer, count: 2000, spread: 6000,
+        scatter(nearStarLayer, count: 3000, spread: 6000,
                 scaleRange: 0.40...0.50,
                 alphaRange: 0.75...0.80,
                 variants:   [.pinprick, .pinprick, .pinprick, .pinprick,
@@ -471,8 +556,10 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         // Drop the mini-map further below the readout panel — it has three
         // bars now (shield / hull / fuel) instead of two, so we need ~18 pt
         // more vertical clearance.
+        // Five bars now (shields / hull / fuel / energy / heat) — drop the
+        // mini-map below them so they don't overlap.
         miniMap.position = CGPoint(x: hw - 18 - miniMap.radius,
-                                   y: hh - 24 - 50 - miniMap.radius)
+                                   y: hh - 24 - 90 - miniMap.radius)
         cameraNode.addChild(miniMap)
         if let system = solarSystem {
             miniMap.configure(suns:    system.sunPositions,
@@ -516,9 +603,13 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         // Helper to spin up one of the three resource rows (track + fill +
         // key label). The fill is wrapped in a container so `xScale` shrinks
-        // it from the right (track edge) instead of the centre.
-        func makeRow(y: CGFloat, color: UIColor, label: String) -> (track: SKShapeNode, fill: SKShapeNode) {
-            panel.addChild(key(label, y: y))
+        // it from the right (track edge) instead of the centre. The label
+        // reference is returned so `setStatus` can rewrite the displayed
+        // number as the value changes each frame.
+        func makeRow(y: CGFloat, color: UIColor, label: String)
+            -> (track: SKShapeNode, fill: SKShapeNode, label: SKLabelNode) {
+            let lbl = key(label, y: y)
+            panel.addChild(lbl)
             let track = barTrack(y: y)
             panel.addChild(track)
 
@@ -532,41 +623,77 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
             fill.strokeColor    = .clear
             container.addChild(fill)
             panel.addChild(container)
-            return (track, fill)
+            return (track, fill, lbl)
         }
 
-        // Resolve the player's max values from the loaded ship definition so
-        // the key labels read "SHIELDS 2200" / "HULL 500" / "FUEL 400" for
-        // the current ship. Defaults match the 0-100 placeholders if the
-        // JSON didn't load.
-        let def       = PlayerProfile.shared.currentShipDef
-        let maxShield = Int(def?.attributes.shields      ?? 100)
-        let maxHull   = Int(def?.attributes.hull         ?? 100)
-        let maxFuel   = Int(def?.attributes.fuelCapacity ?? 100)
+        // Initial labels show the ship's max value — `setStatus` overrides
+        // them every snapshot with the actual current numbers.
+        let def         = PlayerProfile.shared.currentShipDef
+        let maxShield   = Int(def?.attributes.shields        ?? 100)
+        let maxHull     = Int(def?.attributes.hull           ?? 100)
+        let maxFuel     = Int(def?.attributes.fuelCapacity   ?? 100)
+        let maxEnergy   = Int(def?.attributes.energyCapacity ?? 100)
 
         let shieldRow = makeRow(y:   0, color: UIColor(red: 0.30, green: 0.65, blue: 1.00, alpha: 0.95),
                                 label: "SHIELDS \(maxShield)")
-        shieldBar = shieldRow.track
-        shieldFill = shieldRow.fill
+        shieldBar   = shieldRow.track
+        shieldFill  = shieldRow.fill
+        shieldLabel = shieldRow.label
 
         let hullRow = makeRow(y: -18, color: UIColor(red: 1.00, green: 0.30, blue: 0.30, alpha: 0.95),
                               label: "HULL \(maxHull)")
-        hullBar = hullRow.track
-        hullFill = hullRow.fill
+        hullBar   = hullRow.track
+        hullFill  = hullRow.fill
+        hullLabel = hullRow.label
 
-        // Fuel row — amber, sits directly under hull. Fuel doesn't deplete
-        // yet (no consumption mechanics); the bar is initialised at 100%
-        // and `setStatus` accepts a fuel percent for future use.
+        // Fuel row — amber. Fuel doesn't deplete yet; bar stays at 100%
+        // and the label shows current/max.
         let fuelRow = makeRow(y: -36, color: UIColor(red: 1.00, green: 0.65, blue: 0.20, alpha: 0.95),
                               label: "FUEL \(maxFuel)")
-        fuelBar = fuelRow.track
-        fuelFill = fuelRow.fill
+        fuelBar   = fuelRow.track
+        fuelFill  = fuelRow.fill
+        fuelLabel = fuelRow.label
+
+        // Energy row — cyan, sits under fuel. Drained by firing; recharges
+        // passively via `energy_recharge` per second.
+        let energyRow = makeRow(y: -54, color: UIColor(red: 0.30, green: 0.85, blue: 1.00, alpha: 0.95),
+                                label: "ENERGY \(maxEnergy)")
+        energyBar   = energyRow.track
+        energyFill  = energyRow.fill
+        energyLabel = energyRow.label
+
+        // Heat row — red-orange, displayed as a percentage so the label
+        // and fill share the same source of truth.
+        let heatRow = makeRow(y: -72, color: UIColor(red: 1.00, green: 0.45, blue: 0.10, alpha: 0.95),
+                              label: "HEAT 0%")
+        heatBar   = heatRow.track
+        heatFill  = heatRow.fill
+        heatLabel = heatRow.label
     }
 
-    private func setStatus(shieldsPct: CGFloat, hullPct: CGFloat, fuelPct: CGFloat = 1.0) {
-        shieldFill?.xScale = max(0.001, min(1, shieldsPct))
-        hullFill?.xScale   = max(0.001, min(1, hullPct))
-        fuelFill?.xScale   = max(0.001, min(1, fuelPct))
+    /// Updates every readout from the live snapshot — bars by fraction,
+    /// labels with the current raw value (rounded). Heat stays as a
+    /// percentage since the underlying scale changes per hull.
+    private func setStatus(shields: Float, maxShields: Float,
+                           hull: Float, maxHull: Float,
+                           fuel: Float, maxFuel: Float,
+                           energy: Float, maxEnergy: Float,
+                           heat: Float, maxHeat: Float) {
+        func pct(_ n: Float, _ d: Float) -> CGFloat {
+            guard d > 0 else { return 0 }
+            return max(0, min(1, CGFloat(n / d)))
+        }
+        shieldFill?.xScale = max(0.001, pct(shields, maxShields))
+        hullFill?.xScale   = max(0.001, pct(hull,    maxHull))
+        fuelFill?.xScale   = max(0.001, pct(fuel,    maxFuel))
+        energyFill?.xScale = max(0.001, pct(energy,  maxEnergy))
+        let h              = pct(heat, maxHeat)
+        heatFill?.xScale   = max(0.001, h)
+        shieldLabel?.text  = "SHIELDS \(Int(shields.rounded()))"
+        hullLabel?.text    = "HULL \(Int(hull.rounded()))"
+        fuelLabel?.text    = "FUEL \(Int(fuel.rounded()))"
+        energyLabel?.text  = "ENERGY \(Int(energy.rounded()))"
+        heatLabel?.text    = "HEAT \(Int((h * 100).rounded()))%"
     }
 
     // MARK: – Game loop
@@ -857,29 +984,31 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         let mag           = hypot(offset.x, offset.y)
         guard mag > dead else {
             setInput {
-                $0.thrust    = false
-                $0.turnLeft  = false
-                $0.turnRight = false
+                $0.thrust        = false
+                $0.turnLeft      = false
+                $0.turnRight     = false
+                $0.targetHeading = nil
             }
             return
         }
 
-        // Joystick controls FACING: deflect in any direction → rotate to point
-        // that way and thrust forward. `atan2(sin, cos)` gives the signed
-        // shortest difference in (−π, π] without while-loop normalization,
-        // and is stable at exactly ±π where naive subtraction flip-flops.
+        // Joystick controls FACING: deflect in any direction → ship slews
+        // its nose to that absolute world bearing and thrusts forward.
+        // Sending the target as a single number to the sim lets it clamp
+        // the per-tick rotation step so the heading never overshoots —
+        // that's what kept the controls from wobbling at high turn rates.
         let targetAngle = atan2(offset.y, offset.x)
-        let current     = currentPlayerHeading()
-        let rawDiff     = targetAngle - current
-        let diff        = atan2(sin(rawDiff), cos(rawDiff))
-
-        // Dead zone slightly larger than one tick's turn step so the ship
-        // settles cleanly instead of micro-correcting around the target.
-        let angleDead: CGFloat = 0.10
+        // Derive the turn direction (purely for the lean animation —
+        // the sim ignores the flags when `targetHeading` is set).
+        let current = currentPlayerHeading()
+        let rawDiff = targetAngle - current
+        let diff    = atan2(sin(rawDiff), cos(rawDiff))
+        let leanDead: CGFloat = 0.05
         setInput {
-            $0.thrust    = true                    // any deflection = forward
-            $0.turnRight = diff >  angleDead       // server: turnRight increments angle (CCW)
-            $0.turnLeft  = diff < -angleDead       // server: turnLeft decrements angle (CW)
+            $0.thrust        = true
+            $0.targetHeading = Float(targetAngle)
+            $0.turnLeft      = diff < -leanDead
+            $0.turnRight     = diff >  leanDead
         }
     }
 
@@ -993,8 +1122,16 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         // ship node directly in `update(_:)` so it tracks dock/disembark
         // animations smoothly.
         if let s = snapshot.ships[mySessionId] {
-            setStatus(shieldsPct: CGFloat(s.shields) / 100,
-                      hullPct:    CGFloat(s.hull)    / 100)
+            // Fuel still defaults to ship JSON (no consumption mechanics
+            // yet); every other max ships in the snapshot so outfit
+            // contributions show up live.
+            let def     = PlayerProfile.shared.currentShipDef
+            let maxFuel = Float(def?.attributes.fuelCapacity ?? 100)
+            setStatus(shields:    s.shields,   maxShields: s.maxShields,
+                      hull:       s.hull,      maxHull:    s.maxHull,
+                      fuel:       maxFuel,     maxFuel:    maxFuel,
+                      energy:     s.energy,    maxEnergy:  s.maxEnergy,
+                      heat:       s.heat,      maxHeat:    s.maxHeat)
         }
 
         // Projectiles
@@ -1026,7 +1163,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
     private func currentPlayerWeapon() -> (name: String?, stats: OutfitDef.WeaponStats?) {
         let profile = PlayerProfile.shared
         for name in profile.installedOutfits.keys.sorted() {
-            if let def = OutfitRegistry.shared.outfit(named: name),
+            if let def = OutfitRegistry.shared.outfit(id: name),
                let w   = def.weapon {
                 return (name, w)
             }
@@ -1077,7 +1214,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         // Don't damage the firing ship.
         if let sid = mySessionId, projectile.ownerId == sid, ship === shipNodes[sid] { return }
 
-        let weapon = projectile.weaponName.flatMap { OutfitRegistry.shared.outfit(named: $0)?.weapon }
+        let weapon = projectile.weaponName.flatMap { OutfitRegistry.shared.outfit(id: $0)?.weapon }
         // Only player-owned bolts respect the selection-required rule.
         // (Future: NPC AI projectiles will always hit the player.)
         let fromPlayer = projectile.ownerId == (mySessionId ?? "")
@@ -1117,7 +1254,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         let fromPlayer = projectile.ownerId == (mySessionId ?? "")
         if fromPlayer && selectedBody !== asteroid { return }
 
-        let weapon = projectile.weaponName.flatMap { OutfitRegistry.shared.outfit(named: $0)?.weapon }
+        let weapon = projectile.weaponName.flatMap { OutfitRegistry.shared.outfit(id: $0)?.weapon }
         let reload = max(weapon?.reload ?? 1, 0.001)
         // hullDamage is per-second; one shot accounts for `reload` seconds.
         let hullDmg = CGFloat((weapon?.hullDamage ?? 1) * reload)
@@ -1217,12 +1354,12 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
             ? NetworkManager.shared.input.firing
             : localInput.firing
 
-        let weapons = installedBeamWeapons()
-
-        guard firing,
-              let sid  = mySessionId,
-              let ship = shipNodes[sid],
-              !weapons.isEmpty
+        // We DON'T short-circuit on `!firing` any more: turret hardpoint
+        // sprites need to keep tracking the selected target between
+        // bursts so they always point where the next shot would go.
+        // Beam visuals and damage still get gated on `firing` below.
+        guard let sid  = mySessionId,
+              let ship = shipNodes[sid]
         else {
             for slot in turretSlots {
                 slot.beam.isHidden   = true
@@ -1232,57 +1369,76 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
             return
         }
 
-        // Total turret count = sum of installed counts of beam weapons.
-        let totalSlots = weapons.reduce(0) { $0 + $1.count }
-        resizeTurretSlots(to: totalSlots)
+        // Pull the ship's mount layout from its JSON. Each entry already
+        // declares its weapon — we just need to find ones whose weapon is
+        // actually installed AND classifies as a beam (reload >= 1).
+        let def       = ShipRegistry.shared.def(for: ship.metadata.assetName)
+        let turretHPs = def?.turrets ?? []
+        let gunHPs    = def?.guns    ?? []
 
-        // Default aim angle for newly-allocated slots = ship heading so
-        // turrets don't snap from 0 → heading on first fire.
+        // Each mount fires from one installed copy of its declared
+        // weapon. Track remaining installed counts so two mounts with the
+        // same weapon don't both fire if only one is installed.
+        var remaining = PlayerProfile.shared.installedOutfits
+        let overrides = PlayerProfile.shared.mountAssignments
+
+        // Build an ordered slot list: every mount whose weapon is
+        // installed AND is a beam type. Turrets first (so they get low
+        // slot indices and tracking memory persists across rebuilds).
+        struct MountAssignment {
+            let slot:     String   // "turret_0", "gun_2", etc.
+            let mount:    ShipDef.Hardpoint
+            let weapon:   OutfitDef.WeaponStats
+            let isTurret: Bool
+        }
+        var assignments: [MountAssignment] = []
+        // Pair each mount with its slot key so the user-customised
+        // override (mountAssignments["turret_3"] = "..." etc.) can replace
+        // the JSON's default `weapon` value at fire time.
+        let turretEntries = turretHPs.enumerated().map {
+            (slot: "turret_\($0.offset)", mount: $0.element, isTurret: true)
+        }
+        let gunEntries = gunHPs.enumerated().map {
+            (slot: "gun_\($0.offset)", mount: $0.element, isTurret: false)
+        }
+        // `mountAssignments` is now authoritative — JSON-default weapons
+        // are seeded into it at ship-equip time, and any subsequent
+        // drag-to-assign overwrites the slot. No fall-back to the JSON
+        // mount's `weapon` field here.
+        for entry in turretEntries + gunEntries {
+            guard let weaponID = overrides[entry.slot],
+                  remaining[weaponID, default: 0] > 0,
+                  let def = OutfitRegistry.shared.outfit(id: weaponID),
+                  let weapon = def.weapon,
+                  (weapon.reload ?? 0) >= 1.0
+            else { continue }
+            assignments.append(.init(slot:     entry.slot,
+                                     mount:    entry.mount,
+                                     weapon:   weapon,
+                                     isTurret: entry.isTurret))
+            remaining[weaponID]! -= 1
+        }
+
+        resizeTurretSlots(to: assignments.count)
         for i in turretSlots.indices where turretSlots[i].aimAngle == 0 {
             turretSlots[i].aimAngle = ship.heading
         }
 
-        // Hardpoints come from `ringship.json` so each hull can have a
-        // bespoke turret layout without code changes. Falls back to the
-        // metadata's gun mounts only if the JSON omits the field.
-        let hardpoints = turretHardpoints(for: ship)
-        guard !hardpoints.isEmpty else {
-            for slot in turretSlots {
-                slot.beam.isHidden   = true
-                slot.impact.isHidden = true
-            }
-            lastBeamUpdateTime = now
-            return
-        }
-
         let dt = min(max(now - lastBeamUpdateTime, 0), 0.1)
-        var slotIdx = 0
-        for entry in weapons {
-            for _ in 0 ..< entry.count {
-                let mount = hardpoints[slotIdx % hardpoints.count]
-                tickTurret(slotIndex: slotIdx,
-                           weapon:    entry.weapon,
-                           isTurret:  entry.isTurret,
-                           mount:     mount,
-                           ship:      ship,
-                           dt:        dt)
-                slotIdx += 1
-            }
+        for (slotIdx, a) in assignments.enumerated() {
+            let mount = ShipMetadata.Mount(bodyPoint: CGPoint(x: a.mount.x,
+                                                              y: a.mount.y))
+            tickTurret(slotIndex: slotIdx,
+                       weapon:    a.weapon,
+                       isTurret:  a.isTurret,
+                       slot:      a.slot,
+                       mount:     mount,
+                       ship:      ship,
+                       dt:        dt,
+                       firing:    firing)
         }
 
         lastBeamUpdateTime = now
-    }
-
-    /// Body-local turret mount positions for the given ship. Reads the
-    /// JSON `"turret hardpoints"` field first; falls back to the legacy
-    /// `gunMounts` baked into `ShipMetadata` so older hulls keep working
-    /// until their JSON is updated.
-    private func turretHardpoints(for ship: ShipNode) -> [ShipMetadata.Mount] {
-        let shipID = ship.metadata.assetName
-        if let json = ShipRegistry.shared.def(for: shipID)?.turretHardpoints, !json.isEmpty {
-            return json.map { ShipMetadata.Mount(bodyPoint: CGPoint(x: $0.x, y: $0.y)) }
-        }
-        return ship.metadata.gunMounts
     }
 
     /// `(name, weapon, count, isTurret)` for every installed outfit whose
@@ -1294,7 +1450,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         var out: [(String, OutfitDef.WeaponStats, Int, Bool)] = []
         let profile = PlayerProfile.shared
         for name in profile.installedOutfits.keys.sorted() {
-            guard let def    = OutfitRegistry.shared.outfit(named: name),
+            guard let def    = OutfitRegistry.shared.outfit(id: name),
                   let weapon = def.weapon,
                   (weapon.reload ?? 0) >= 1.0,
                   let count  = profile.installedOutfits[name], count > 0
@@ -1346,11 +1502,12 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
     private func tickTurret(slotIndex i: Int,
                             weapon: OutfitDef.WeaponStats,
                             isTurret: Bool,
+                            slot: String,
                             mount: ShipMetadata.Mount,
                             ship: ShipNode,
-                            dt: TimeInterval) {
+                            dt: TimeInterval,
+                            firing: Bool) {
         let origin = mountWorldPosition(mount: mount, ship: ship)
-        let range  = CGFloat((weapon.velocity ?? 400) * (weapon.lifetime ?? 1))
 
         // ── Determine where the turret WANTS to aim ────────────────────
         let targetAngle: CGFloat
@@ -1377,6 +1534,35 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         }
         turretSlots[i].aimAngle = aim
 
+        // Push the live aim to the painted hardpoint so its barrel
+        // matches the firing solution even when the player isn't
+        // actively firing. Non-turret mounts don't get a sprite today.
+        if isTurret {
+            ship.setTurretAim(slot: slot, worldAngle: aim)
+        }
+
+        // ── Beam visuals + damage only while actively firing ───────────
+        guard firing else {
+            turretSlots[i].beam.isHidden   = true
+            turretSlots[i].impact.isHidden = true
+            return
+        }
+
+        // Spend energy + accrue heat for this frame of firing. If energy
+        // runs out, hide this beam slot and bail before any visuals or
+        // ray-casting work.
+        let canFire = offlineSim?.applyBeamFiringCost(
+            firingEnergy: Float(weapon.firingEnergy ?? 0),
+            firingHeat:   Float(weapon.firingHeat   ?? 0),
+            dt:           Float(dt)
+        ) ?? true
+        if !canFire {
+            turretSlots[i].beam.isHidden   = true
+            turretSlots[i].impact.isHidden = true
+            return
+        }
+
+        let range = CGFloat((weapon.velocity ?? 400) * (weapon.lifetime ?? 1))
         let fullEnd = CGPoint(x: origin.x + cos(aim) * range,
                               y: origin.y + sin(aim) * range)
 

@@ -8,7 +8,30 @@ final class ShipNode: SKNode {
     private let isLocalPlayer: Bool
 
     private var visual:       SKNode!
-    private var thrustEmitter: SKEmitterNode?
+
+    /// One thrust emitter per active engine mount. Each entry carries the
+    /// emitter and the body-local mount position so `update(from:)` can
+    /// rotate it into world space every frame. Empty when the ship has
+    /// no engines installed in any of its JSON-declared slots.
+    private var thrustEmitters: [(emitter: SKEmitterNode, mount: CGPoint)] = []
+
+    /// One painted turret hardpoint sprite per installed turret slot whose
+    /// outfit has a matching PNG in `Art.scnassets/outfits/hardpoints/`.
+    /// The sprite rides on the hull (positions update with body yaw each
+    /// frame) but its zRotation is driven externally by GameScene so the
+    /// barrel tracks the turret's aim, not the ship's heading.
+    private final class TurretSpriteEntry {
+        let sprite: SKSpriteNode
+        let mount:  CGPoint
+        let slot:   String
+        var hasExternalAim = false
+        init(sprite: SKSpriteNode, mount: CGPoint, slot: String) {
+            self.sprite = sprite
+            self.mount  = mount
+            self.slot   = slot
+        }
+    }
+    private var turretSprites: [TurretSpriteEntry] = []
 
     // SCN nodes whose Euler angles we tweak each frame.
     private weak var headingNode: SCNNode?   // yaw   — rotates around scene +Z
@@ -19,8 +42,6 @@ final class ShipNode: SKNode {
     /// `updatePNGLighting` can push the new direction value each frame.
     private weak var pngLitSprite: SKSpriteNode?
 
-    /// Distance from ship center to where the thrust emitter mounts.
-    private var thrustDistance: CGFloat = 40
 
     /// World-space heading of the ship in radians. 0 = +X (right), π/2 = +Y
     /// (up). Updated from each snapshot; the HUD uses this for the radar
@@ -59,13 +80,16 @@ final class ShipNode: SKNode {
 
         super.init()
 
-        if let mount = self.metadata.thrustMounts.first {
-            thrustDistance = abs(mount.bodyPoint.y)
-        }
-
         setupVisual()
         addChild(visual)
-        addChild(makeThrustEmitter())
+
+        // Engine emitters — one per JSON-declared engine slot whose
+        // `engine` thruster is actually installed on this ship. Remote
+        // (non-local) ships don't expose their loadout, so light up
+        // every declared slot in that case. Falls back to the legacy
+        // ShipMetadata.thrustMounts entry when the JSON omits engines.
+        installEngineEmitters(def: def)
+        installTurretSprites(def: def)
 
         // Collision body — used purely for contact detection (see
         // `CollisionCategory`). The radius prefers the ship JSON's
@@ -351,8 +375,116 @@ final class ShipNode: SKNode {
         e.particleAlpha            = 0.85
         e.particleAlphaSpeed       = -3.5
         e.emissionAngleRange       = 0.35
-        thrustEmitter = e
         return e
+    }
+
+    /// One-shot cache of hardpoint PNG textures keyed by outfit ID. The
+    /// shipped asset for `heavy_laser_turret` lives at
+    /// `Art.scnassets/outfits/hardpoints/heavy laser turret.png` (spaces),
+    /// so the loader also tries the underscores-to-spaces variant before
+    /// giving up — that way both naming conventions are supported as
+    /// future hardpoint art is added.
+    private enum HardpointSpriteAssets {
+        static var cache: [String: SKTexture?] = [:]
+
+        static func texture(forID id: String) -> SKTexture? {
+            if let cached = cache[id] { return cached }
+            let tex: SKTexture? = load(named: id)
+                ?? load(named: id.replacingOccurrences(of: "_", with: " "))
+            cache[id] = tex
+            return tex
+        }
+
+        private static func load(named name: String) -> SKTexture? {
+            guard let url = Bundle.main.url(
+                    forResource:  name,
+                    withExtension: "png",
+                    subdirectory: "Art.scnassets/outfits/hardpoints"),
+                  let image = UIImage(contentsOfFile: url.path)
+            else { return nil }
+            return SKTexture(image: image)
+        }
+    }
+
+    /// Paints a hardpoint sprite for each turret slot whose currently
+    /// installed weapon ships with a PNG. Mirrors the engine-emitter
+    /// pattern: sprites are direct children of `ShipNode`, so their
+    /// position tracks the hull but their rotation is independent — the
+    /// barrel can point at the target while the hull rolls.
+    private func installTurretSprites(def: ShipDef?) {
+        guard let def, let turrets = def.turrets else { return }
+        // Remote ships don't share their loadout yet — paint every
+        // declared turret using the JSON's default weapon for the asset
+        // lookup so other players' ships still look mounted.
+        let assignments = isLocalPlayer
+            ? PlayerProfile.shared.mountAssignments
+            : [:] as [String: String]
+        for (idx, mount) in turrets.enumerated() {
+            let slot = "turret_\(idx)"
+            let outfitID: String? = isLocalPlayer ? assignments[slot] : mount.weapon
+            guard let oid = outfitID,
+                  let tex = HardpointSpriteAssets.texture(forID: oid)
+            else { continue }
+            let sprite       = SKSpriteNode(texture: tex)
+            sprite.zPosition = 1   // above hull, below beams (which sit at 4)
+            addChild(sprite)
+            turretSprites.append(TurretSpriteEntry(
+                sprite: sprite,
+                mount:  CGPoint(x: mount.x, y: mount.y),
+                slot:   slot
+            ))
+        }
+    }
+
+    /// Called by GameScene's tickTurret each frame the turret is being
+    /// aimed (firing or merely tracking a selected target). After the
+    /// first call the sprite's rotation is driven solely from this aim
+    /// angle — `update(from:)` stops syncing it to the hull's yaw.
+    func setTurretAim(slot: String, worldAngle: CGFloat) {
+        guard let entry = turretSprites.first(where: { $0.slot == slot })
+        else { return }
+        // Hardpoint PNG, like the ship PNG, is drawn with its barrel
+        // pointing along the texture's +y axis. Convert from world angle
+        // (0 = +x) to sprite zRotation (0 = +y) by subtracting π/2.
+        entry.sprite.zRotation = worldAngle - .pi / 2
+        entry.hasExternalAim   = true
+    }
+
+    /// Inspects the JSON `engines` array and creates a thrust emitter at
+    /// each slot whose `mountAssignments["engine_<i>"]` resolves to an
+    /// installed thruster-class outfit. With `mountAssignments` now
+    /// authoritative, the player's customised loadout drives which
+    /// engine plumes are visible. Falls back to the legacy
+    /// `metadata.thrustMounts.first` position when the JSON has no
+    /// engines array (older hulls).
+    private func installEngineEmitters(def: ShipDef?) {
+        let jsonEngines = def?.engines ?? []
+        let mountsBodyLocal: [CGPoint]
+        if !jsonEngines.isEmpty {
+            // Only the local player ship has a known live loadout — for
+            // remote ships, render every declared slot until snapshots
+            // carry per-ship outfit info.
+            let assignments = isLocalPlayer
+                ? PlayerProfile.shared.mountAssignments
+                : [:] as [String: String]
+            mountsBodyLocal = jsonEngines.enumerated().compactMap {
+                (idx, e) -> CGPoint? in
+                if isLocalPlayer {
+                    guard assignments["engine_\(idx)"] != nil else { return nil }
+                }
+                return CGPoint(x: e.x, y: e.y)
+            }
+        } else if let legacy = metadata.thrustMounts.first {
+            mountsBodyLocal = [legacy.bodyPoint]
+        } else {
+            mountsBodyLocal = []
+        }
+
+        for body in mountsBodyLocal {
+            let e = makeThrustEmitter()
+            addChild(e)
+            thrustEmitters.append((emitter: e, mount: body))
+        }
     }
 
     // MARK: – Update
@@ -372,15 +504,34 @@ final class ShipNode: SKNode {
             visual.zRotation = CGFloat(yaw)
         }
 
-        // Thrust emitter follows the ship's tail in world space. The emitter
-        // is a 2D node, so we compute its rotated position and emission angle
-        // manually rather than parenting it under a rotating container.
+        // Drive every engine emitter independently. Body-local mount
+        // points rotate with the ship's heading; emission always points
+        // out the back (heading + π) so plumes look correct from any
+        // turret angle of the hull.
         let a       = CGFloat(ship.angle)
-        let tailX   = -cos(a) * thrustDistance
-        let tailY   = -sin(a) * thrustDistance
-        thrustEmitter?.position         = CGPoint(x: tailX, y: tailY)
-        thrustEmitter?.emissionAngle    = a + .pi
-        thrustEmitter?.particleBirthRate = ship.thrusting ? 90 : 0
+        let yawBody = CGFloat(yaw)         // reuse the headingNode's yaw above
+        for entry in thrustEmitters {
+            let bx = entry.mount.x, by = entry.mount.y
+            // Body → world rotation (same formula as turret mounts).
+            let wx = bx * cos(yawBody) - by * sin(yawBody)
+            let wy = bx * sin(yawBody) + by * cos(yawBody)
+            entry.emitter.position          = CGPoint(x: wx, y: wy)
+            entry.emitter.emissionAngle     = a + .pi
+            entry.emitter.particleBirthRate = ship.thrusting ? 90 : 0
+        }
+
+        // Turret hardpoint sprites: same body→world transform as engines
+        // for position. Rotation defaults to following hull yaw until
+        // GameScene's tick takes over via setTurretAim(...).
+        for entry in turretSprites {
+            let bx = entry.mount.x, by = entry.mount.y
+            let wx = bx * cos(yawBody) - by * sin(yawBody)
+            let wy = bx * sin(yawBody) + by * cos(yawBody)
+            entry.sprite.position = CGPoint(x: wx, y: wy)
+            if !entry.hasExternalAim {
+                entry.sprite.zRotation = yawBody
+            }
+        }
 
         aimCenterLight(shipX: ship.x, shipY: ship.y,
                        sunX:  Float(sunPosition.x),

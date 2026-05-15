@@ -10,7 +10,7 @@ final class NewGameScene: SKScene, UITextFieldDelegate {
     static let startingSystem   = "home_system"
     static let startingPlanetID = "hadrian"
     static let startingShipID   = "ringship"
-    static let startingCredits  = 100_000
+    static let startingCredits  = 1_000_000
 
     private let gameMode: GameMode
 

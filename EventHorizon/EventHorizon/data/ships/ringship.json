@@ -1,219 +1,89 @@
 {
   "ship": "RingShip",
+  "id": "ringship",
   "sprite": "ship/bactrian",
   "thumbnail": "thumbnail/bactrian",
   "attributes": {
     "licenses": [
-      "City-Ship"
+      "city_ship"
     ],
-    "category": "Utility",
+    "category": "utility",
     "cost": 17600000,
     "shields": 17500,
     "hull": 8600,
-    "required crew": 70,
+    "required_crew": 70,
     "bunks": 245,
     "mass": 2450,
     "drag": 30.6,
-    "heat dissipation": 0.22,
-    "fuel capacity": 700,
-    "cargo space": 530,
-    "outfit space": 740,
-    "weapon capacity": 300,
-    "engine capacity": 180,
+    "heat_dissipation": 0.22,
+    "energy_capacity": 500,
+    "energy_recharge": 2,
+    "fuel_capacity": 700,
+    "cargo_space": 530,
+    "outfit_space": 740,
+    "weapon_capacity": 300,
+    "engine_capacity": 180,
     "weapon": {
-      "blast radius": 260,
-      "shield damage": 2600,
-      "hull damage": 1300,
-      "hit force": 3900
+      "blast_radius": 260,
+      "shield_damage": 2600,
+      "hull_damage": 1300,
+      "hit_force": 3900
     }
   },
   "outfits": [
-    {
-      "name": "Sidewinder Missile Launcher",
-      "count": 2
-    },
-    {
-      "name": "Sidewinder Missile",
-      "count": 90
-    },
-    {
-      "name": "Torpedo Launcher",
-      "count": 1
-    },
-    {
-      "name": "Torpedo",
-      "count": 30
-    },
-    {
-      "name": "Heavy Laser Turret",
-      "count": 4
-    },
-    {
-      "name": "Heavy Anti-Missile Turret",
-      "count": 2
-    },
-    {
-      "name": "Fusion Reactor",
-      "count": 1
-    },
-    {
-      "name": "LP144a Battery Pack",
-      "count": 1
-    },
-    {
-      "name": "D94-YV Shield Generator",
-      "count": 1
-    },
-    {
-      "name": "Large Radar Jammer",
-      "count": 1
-    },
-    {
-      "name": "Ramscoop",
-      "count": 1
-    },
-    {
-      "name": "Laser Rifle",
-      "count": 15
-    },
-    {
-      "name": "X4700 Ion Thruster",
-      "count": 1
-    },
-    {
-      "name": "X5200 Ion Steering",
-      "count": 1
-    },
-    {
-      "name": "Hyperdrive",
-      "count": 1
-    }
-  ],
-  "turret hardpoints": [
-    { "x": -32, "y":  22 },
-    { "x":  32, "y":  22 },
-    { "x": -18, "y": -22 },
-    { "x":  18, "y": -22 }
-  ],
-  "engines": [
-    {
-      "x": 18.5,
-      "y": 232
-    },
-    {
-      "x": -15,
-      "y": 232
-    }
-  ],
-  "guns": [
-    {
-      "x": -9,
-      "y": -231.5
-    },
-    {
-      "x": 13.5,
-      "y": -231.5,
-      "weapon": "Torpedo Launcher"
-    },
-    {
-      "x": 36.5,
-      "y": -197,
-      "weapon": "Sidewinder Missile Launcher"
-    },
-    {
-      "x": 42,
-      "y": -193,
-      "weapon": "Sidewinder Missile Launcher"
-    }
+    { "name": "sidewinder_missile_launcher", "count": 2 },
+    { "name": "sidewinder_missile",          "count": 90 },
+    { "name": "torpedo_launcher",            "count": 1 },
+    { "name": "torpedo",                     "count": 30 },
+    { "name": "heavy_laser_turret",          "count": 4 },
+    { "name": "heavy_laser_gun",             "count": 2 },
+    { "name": "heavy_anti_missile_turret",   "count": 2 },
+    { "name": "fusion_reactor",              "count": 1 },
+    { "name": "lp144a_battery_pack",         "count": 1 },
+    { "name": "d94_yv_shield_generator",     "count": 1 },
+    { "name": "large_radar_jammer",          "count": 1 },
+    { "name": "ramscoop",                    "count": 1 },
+    { "name": "laser_rifle",                 "count": 15 },
+    { "name": "x4700_ion_thruster",          "count": 1 },
+    { "name": "x5200_ion_steering",          "count": 1 },
+    { "name": "hyperdrive",                  "count": 1 }
   ],
   "turrets": [
-    {
-      "x": 37,
-      "y": -132.5,
-      "weapon": "Heavy Anti-Missile Turret"
-    },
-    {
-      "x": -39,
-      "y": -39,
-      "weapon": "Heavy Laser Turret"
-    },
-    {
-      "x": 31.5,
-      "y": -26,
-      "weapon": "Heavy Laser Turret"
-    },
-    {
-      "x": -42.5,
-      "y": 75,
-      "weapon": "Heavy Laser Turret"
-    },
-    {
-      "x": 32.5,
-      "y": 132,
-      "weapon": "Heavy Laser Turret"
-    },
-    {
-      "x": -33.5,
-      "y": 192.5,
-      "weapon": "Heavy Anti-Missile Turret"
-    }
+    { "x": -32, "y":  22, "weapon": "heavy_laser_turret" },
+    { "x":  32, "y":  22, "weapon": "heavy_laser_turret" },
+    { "x": -18, "y": -22, "weapon": "heavy_laser_turret" },
+    { "x":  18, "y": -22, "weapon": "heavy_laser_turret" },
+    { "x": -28, "y":   0, "weapon": "heavy_anti_missile_turret" },
+    { "x":  28, "y":   0, "weapon": "heavy_anti_missile_turret" }
+  ],
+  "guns": [
+    { "x":  -8, "y":  30, "weapon": "heavy_laser_gun" },
+    { "x":   8, "y":  30, "weapon": "heavy_laser_gun" },
+    { "x": -12, "y":  36, "weapon": "torpedo_launcher" },
+    { "x":  12, "y":  36, "weapon": "sidewinder_missile_launcher" },
+    { "x": -16, "y":  32, "weapon": "sidewinder_missile_launcher" }
+  ],
+  "engines": [
+    { "x":  -8, "y": -42, "engine": "plasma_thruster" },
+    { "x":   8, "y": -42, "engine": "plasma_thruster" }
   ],
   "bays": [
-    {
-      "type": "Fighter",
-      "x": -43.5,
-      "y": -125,
-      "launch effect": "human internal"
-    },
-    {
-      "type": "Fighter",
-      "x": 53,
-      "y": -72.5,
-      "launch effect": "human internal"
-    },
-    {
-      "type": "Fighter",
-      "x": -50,
-      "y": 103.5,
-      "launch effect": "human internal"
-    }
+    { "type": "fighter", "x": -43.5, "y": -125,   "launch_effect": "human_internal" },
+    { "type": "fighter", "x":  53,   "y":  -72.5, "launch_effect": "human_internal" },
+    { "type": "fighter", "x": -50,   "y":  103.5, "launch_effect": "human_internal" }
   ],
   "leaks": [
-    {
-      "type": "leak",
-      "count": 30,
-      "frequency": 50
-    },
-    {
-      "type": "flame",
-      "count": 30,
-      "frequency": 80
-    },
-    {
-      "type": "big leak",
-      "count": 50,
-      "frequency": 30
-    }
+    { "type": "leak",     "count": 30, "frequency": 50 },
+    { "type": "flame",    "count": 30, "frequency": 80 },
+    { "type": "big_leak", "count": 50, "frequency": 30 }
   ],
   "explosions": [
-    {
-      "type": "small explosion",
-      "count": 25
-    },
-    {
-      "type": "medium explosion",
-      "count": 35
-    },
-    {
-      "type": "large explosion",
-      "count": 45
-    },
-    {
-      "type": "huge explosion",
-      "count": 30
-    }
+    { "type": "small_explosion",  "count": 25 },
+    { "type": "medium_explosion", "count": 35 },
+    { "type": "large_explosion",  "count": 45 },
+    { "type": "huge_explosion",   "count": 30 }
   ],
-  "final explode": "final explosion large",
+  "final_explode": "final_explosion_large",
   "description": [
     "The Lionheart Bactrian is the last of the great city-ships, a design hearkening back to the early days of space colonization when a long-distance vessel needed to be a self-contained world, able to survive for weeks at a time without encountering an inhabited planet. It is not only a freighter, but a carrier, and a capable warship either at short range or at a distance.",
     "Naturally, this versatility also makes it extremely expensive, and the Bactrian is normally only for sale to citizens who have been vetted by the local government of the Deep."

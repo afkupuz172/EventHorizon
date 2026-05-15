@@ -9,8 +9,18 @@ struct ShipSnapshot {
     let angle: Float
     let velX: Float
     let velY: Float
-    let shields: Float
-    let hull: Float
+    let shields:    Float
+    let maxShields: Float
+    let hull:       Float
+    let maxHull:    Float
+    /// Current stored energy in raw points (0 ... max). HUD divides by
+    /// snapshot's `maxEnergy` to get the bar fill fraction.
+    let energy:     Float
+    let maxEnergy:  Float
+    /// Current accumulated heat in raw points (0 ... maxHeat). HUD shows
+    /// `heat / maxHeat` as a percentage.
+    let heat:       Float
+    let maxHeat:    Float
     let thrusting: Bool
     let dead: Bool
 }
@@ -52,6 +62,12 @@ struct InputState {
     var turnLeft  = false
     var turnRight = false
     var firing    = false
+    /// Preferred ship heading in radians. When non-nil, the sim slews
+    /// toward this target at the ship's current turn rate, clamping the
+    /// per-tick step to whatever's left so it never overshoots. The
+    /// `turnLeft`/`turnRight` flags are ignored when this is set — they
+    /// remain for any future keyboard-style input.
+    var targetHeading: Float? = nil
 }
 
 // ── NetworkManager ─────────────────────────────────────────────────────────────
@@ -196,9 +212,18 @@ final class NetworkManager {
                       let thrust  = s["thrusting"] as? Bool,
                       let dead    = s["dead"]      as? Bool
                 else { continue }
+                let maxShields = (s["maxShields"] as? Double).map({ Float($0) }) ?? 100
+                let maxHull    = (s["maxHull"]    as? Double).map({ Float($0) }) ?? 100
+                let energy     = (s["energy"]     as? Double).map({ Float($0) }) ?? 0
+                let maxEnergy  = (s["maxEnergy"]  as? Double).map({ Float($0) }) ?? 100
+                let heat       = (s["heat"]       as? Double).map({ Float($0) }) ?? 0
+                let maxHeat    = (s["maxHeat"]    as? Double).map({ Float($0) }) ?? 1000
                 ships[id] = ShipSnapshot(x: x, y: y, angle: angle,
                                          velX: velX, velY: velY,
-                                         shields: shields, hull: hull,
+                                         shields: shields, maxShields: maxShields,
+                                         hull: hull, maxHull: maxHull,
+                                         energy: energy, maxEnergy: maxEnergy,
+                                         heat: heat, maxHeat: maxHeat,
                                          thrusting: thrust, dead: dead)
             }
 

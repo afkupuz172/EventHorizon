@@ -174,6 +174,71 @@ final class PlanetScene: SKScene {
         view?.presentScene(loading, transition: .fade(withDuration: 0.30))
     }
 
+    /// Shows a blocking dimmed panel with a single OK button. Used for
+    /// pre-launch errors like missing engines. Tapping anywhere outside
+    /// the OK button is treated as dismiss too, so the player can't get
+    /// stuck behind the modal.
+    private func presentWarning(title: String, message: String) {
+        let overlay = SKNode()
+        overlay.zPosition = 2000
+
+        let dim = SKShapeNode(rectOf: size)
+        dim.fillColor   = UIColor(white: 0, alpha: 0.7)
+        dim.strokeColor = .clear
+        overlay.addChild(dim)
+
+        let panelW: CGFloat = min(size.width - 80, 460)
+        let panelH: CGFloat = 200
+        let panel = SKShapeNode(
+            rect: CGRect(x: -panelW / 2, y: -panelH / 2, width: panelW, height: panelH),
+            cornerRadius: 10
+        )
+        panel.fillColor   = UIColor(white: 0.08, alpha: 1)
+        panel.strokeColor = UIColor(red: 0.95, green: 0.45, blue: 0.30, alpha: 0.85)
+        panel.lineWidth   = 1.5
+        overlay.addChild(panel)
+
+        let titleLbl             = SKLabelNode(text: title)
+        titleLbl.fontName        = "AvenirNext-DemiBold"
+        titleLbl.fontSize        = 15
+        titleLbl.fontColor       = UIColor(red: 1, green: 0.7, blue: 0.5, alpha: 1)
+        titleLbl.position        = CGPoint(x: 0, y: panelH / 2 - 30)
+        overlay.addChild(titleLbl)
+
+        let body             = SKLabelNode(text: message)
+        body.fontName        = "AvenirNextCondensed-Regular"
+        body.fontSize        = 13
+        body.fontColor       = UIColor(white: 0.85, alpha: 1)
+        body.numberOfLines   = 0
+        body.preferredMaxLayoutWidth = panelW - 50
+        body.lineBreakMode   = .byWordWrapping
+        body.verticalAlignmentMode = .center
+        body.position        = CGPoint(x: 0, y: 4)
+        overlay.addChild(body)
+
+        let okBtn = SKShapeNode(
+            rect: CGRect(x: -64, y: -16, width: 128, height: 32),
+            cornerRadius: 6
+        )
+        okBtn.fillColor   = UIColor(red: 0.18, green: 0.55, blue: 1.0, alpha: 0.92)
+        okBtn.strokeColor = UIColor(red: 0.45, green: 0.80, blue: 1.0, alpha: 1)
+        okBtn.lineWidth   = 1
+        okBtn.position    = CGPoint(x: 0, y: -panelH / 2 + 36)
+        okBtn.name        = "warning_ok"
+        let okLbl             = SKLabelNode(text: "OK")
+        okLbl.fontName        = "AvenirNext-Bold"
+        okLbl.fontSize        = 13
+        okLbl.fontColor       = .white
+        okLbl.verticalAlignmentMode = .center
+        okBtn.addChild(okLbl)
+        overlay.addChild(okBtn)
+
+        addChild(overlay)
+        warningOverlay = overlay
+    }
+
+    private var warningOverlay: SKNode?
+
     private func buildBackground() {
         // Full-screen port artwork. Scaled to fill the entire scene rect
         // and pushed to the back; menu buttons + text box overlay on top.
@@ -339,6 +404,20 @@ final class PlanetScene: SKScene {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
         let scenePoint = touch.location(in: self)
+        // Modal warning consumes all input until dismissed via the OK
+        // button (or any tap on the dim background).
+        if let overlay = warningOverlay {
+            for child in overlay.children {
+                if (child.name == "warning_ok"),
+                   let shape = child as? SKShapeNode,
+                   shape.calculateAccumulatedFrame().contains(scenePoint) {
+                    flash(button: shape)
+                }
+            }
+            overlay.removeFromParent()
+            warningOverlay = nil
+            return
+        }
         for (btn, action) in menuButtons where btn.contains(scenePoint) {
             flash(button: btn)
             action()
@@ -396,6 +475,25 @@ final class PlanetScene: SKScene {
     /// purely visual cover for scene setup.
     private func beginDisembarkSequence() {
         guard loadingPanel == nil else { return }   // ignore re-tap
+
+        // Refuse to launch if the ship can't actually move. Either no
+        // thrusters or no steering installed → blocking warning. The
+        // player can cancel and head to the outfitter to install engines.
+        let profile     = PlayerProfile.shared
+        let thrust      = profile.totalEngineThrust
+        let turn        = profile.totalSteeringTurn
+        if thrust <= 0 || turn <= 0 {
+            let detail: String
+            if thrust <= 0 && turn <= 0 {
+                detail = "Your ship has no thrusters or steering installed — it cannot leave the dock. Visit the OUTFITTER to install engines."
+            } else if thrust <= 0 {
+                detail = "Your ship has no thrusters installed — it cannot accelerate. Visit the OUTFITTER to install a thruster."
+            } else {
+                detail = "Your ship has no steering installed — it cannot turn. Visit the OUTFITTER to install a steering."
+            }
+            presentWarning(title: "CANNOT DISEMBARK", message: detail)
+            return
+        }
 
         for node in dismissableUI { node.isHidden = true }
         menuButtons.removeAll()                     // disable any inflight taps

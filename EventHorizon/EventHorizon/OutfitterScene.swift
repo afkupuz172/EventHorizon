@@ -3,6 +3,38 @@ import UIKit
 
 // MARK: – Shared outfit icon (used by OutfitterScene and ShipyardScene)
 
+/// Cached PNG textures from `Art.scnassets/outfits/icons/`. Loader returns
+/// `nil` for outfits that don't have an icon file shipped yet.
+private enum OutfitIconAssets {
+    static var cache: [String: SKTexture?] = [:]
+
+    static func texture(forID id: String) -> SKTexture? {
+        if let cached = cache[id] { return cached }
+        let tex: SKTexture? = {
+            guard let url = Bundle.main.url(
+                    forResource:  id,
+                    withExtension: "png",
+                    subdirectory: "Art.scnassets/outfits/icons"),
+                  let image = UIImage(contentsOfFile: url.path)
+            else { return nil }
+            return SKTexture(image: image)
+        }()
+        cache[id] = tex
+        return tex
+    }
+}
+
+/// Returns the outfit's PNG icon when available, falling back to the
+/// category-coloured rounded-rect placeholder when the asset is missing.
+func outfitIcon(id: String, category: String?, size: CGFloat) -> SKNode {
+    if let tex = OutfitIconAssets.texture(forID: id) {
+        let sprite = SKSpriteNode(texture: tex,
+                                  size: CGSize(width: size, height: size))
+        return sprite
+    }
+    return outfitCategoryIcon(category: category, size: size)
+}
+
 /// Returns a small coloured rounded-rect icon keyed on outfit category.
 func outfitCategoryIcon(category: String?, size: CGFloat) -> SKNode {
     let color: UIColor
@@ -60,6 +92,27 @@ final class OutfitterScene: SKScene {
     // rowBgNodes: row selection — rebuilt on every buy/sell
     private var rowBgNodes:     [(bg: SKShapeNode, name: String)] = []
 
+    // Scroll state for the outfit list. Persists across rebuilds so
+    // buy/sell doesn't snap the view back to the top.
+    private var outfitListScrollOffset: CGFloat = 0
+    private var outfitListContentHeight: CGFloat = 0
+    private var outfitListViewportHeight: CGFloat = 0
+    private var dragStartedInList = false
+    private var dragLastY: CGFloat = 0
+    private var dragMovedEnough = false
+
+    // Right-panel inventory scrolling state. Tracks separately from the
+    // outfit-catalogue scroll so the two lists pan independently.
+    private var inventoryScrollOffset: CGFloat = 0
+    private var inventoryContentHeight: CGFloat = 0
+    private var inventoryViewportHeight: CGFloat = 0
+    private var inventoryDragStarted = false
+    private var inventoryDragLastY: CGFloat = 0
+    private var inventoryDragMovedEnough = false
+    private var inventoryContainer = SKNode()
+    private var inventoryColumnLeftX: CGFloat = 0
+    private var inventoryColumnRightX: CGFloat = 0
+
     // MARK: – Init
 
     init(size: CGSize, info: DockedPlanetInfo, gameMode: GameMode) {
@@ -83,9 +136,20 @@ final class OutfitterScene: SKScene {
         buildDividers()
         buildSectionHeaders()
 
-        outfitListContainer = SKNode(); addChild(outfitListContainer)
-        centerContainer     = SKNode(); addChild(centerContainer)
-        rightContainer      = SKNode(); addChild(rightContainer)
+        // Left column crop — clamps outfit list so it doesn't bleed past headers.
+        let listCropH = contentTop - 16 - contentBottom
+        let listCrop  = SKCropNode()
+        let lmask     = SKSpriteNode(color: .white,
+                                     size: CGSize(width: listW, height: listCropH))
+        lmask.position = CGPoint(x: listLeft + listW / 2,
+                                 y: (contentTop - 16 + contentBottom) / 2)
+        listCrop.maskNode = lmask
+        outfitListContainer = SKNode()
+        listCrop.addChild(outfitListContainer)
+        addChild(listCrop)
+
+        centerContainer = SKNode(); addChild(centerContainer)
+        rightContainer  = SKNode(); addChild(rightContainer)
 
         buildOutfitList()
         buildCenterPanel()
@@ -188,39 +252,47 @@ final class OutfitterScene: SKScene {
 
         let rowH: CGFloat    = 70
         let profile          = PlayerProfile.shared
-        var rowTop: CGFloat  = contentTop - 16
+        let listTop: CGFloat = contentTop - 16
+        outfitListViewportHeight = listTop - contentBottom
+        let allDefs = OutfitRegistry.shared.definitions.values.sorted(by: { $0.displayName < $1.displayName })
+        outfitListContentHeight  = CGFloat(allDefs.count) * rowH
+        // Clamp persisted scroll offset to the new bounds (e.g. after a
+        // sell shortens the list).
+        let maxScroll = max(0, outfitListContentHeight - outfitListViewportHeight)
+        if outfitListScrollOffset > maxScroll { outfitListScrollOffset = maxScroll }
+        if outfitListScrollOffset < 0         { outfitListScrollOffset = 0 }
 
-        for def in OutfitRegistry.shared.definitions.values.sorted(by: { $0.outfit < $1.outfit }) {
-            guard rowTop - rowH > contentBottom else { break }
+        var rowTop: CGFloat  = listTop
 
+        for def in allDefs {
             let midY         = rowTop - rowH / 2
-            let isSelected   = (def.outfit == selectedOutfitName)
-            let installed    = profile.installedOutfits[def.outfit] ?? 0
+            let installed    = profile.installedOutfits[def.id] ?? 0
             let canAffordBuy = (def.cost ?? Int.max) <= profile.credits
 
-            // Row background
+            let selected = (def.id == selectedOutfitName)
             let rowBg = SKShapeNode(
                 rect: CGRect(x: listLeft + 4, y: rowTop - rowH + 2,
                              width: listW - 8, height: rowH - 4),
                 cornerRadius: 4
             )
-            rowBg.fillColor   = isSelected
+            rowBg.fillColor   = selected
                 ? UIColor(red: 0.10, green: 0.28, blue: 0.52, alpha: 0.85)
                 : UIColor(white: 0.06, alpha: 0.80)
-            rowBg.strokeColor = isSelected
+            rowBg.strokeColor = selected
                 ? UIColor(red: 0.28, green: 0.60, blue: 1.0, alpha: 0.60)
                 : UIColor(white: 0.18, alpha: 0.45)
-            rowBg.lineWidth = 1
+            rowBg.lineWidth   = 1
             outfitListContainer.addChild(rowBg)
-            rowBgNodes.append((rowBg, def.outfit))
+            rowBgNodes.append((rowBg, def.id))
 
-            // Category icon
-            let icon = outfitCategoryIcon(category: def.category, size: 38)
+            // Outfit icon — PNG from Art.scnassets/outfits/icons/<id>.png
+            // when present; otherwise a category-coloured placeholder.
+            let icon = outfitIcon(id: def.id, category: def.category, size: 38)
             icon.position = CGPoint(x: listLeft + 10 + 19, y: midY)
             outfitListContainer.addChild(icon)
 
             // Name
-            let nameLbl             = SKLabelNode(text: def.outfit)
+            let nameLbl             = SKLabelNode(text: def.displayName)
             nameLbl.fontName        = "AvenirNext-DemiBold"
             nameLbl.fontSize        = 11
             nameLbl.fontColor       = .white
@@ -294,16 +366,21 @@ final class OutfitterScene: SKScene {
 
             // Register buy / sell — buy before row bg so it wins on overlap
             if canAffordBuy {
-                let name = def.outfit
+                let name = def.id
                 outfitButtons.append((buyBtn, { [weak self] in self?.performBuy(name: name) }))
             }
             if hasSell {
-                let name = def.outfit
+                let name = def.id
                 outfitButtons.append((sellBtn, { [weak self] in self?.performSell(name: name) }))
             }
 
             rowTop -= rowH
         }
+
+        // Apply the persisted scroll offset by shifting the whole list
+        // container. Positive offset moves the list up, revealing lower
+        // entries.
+        outfitListContainer.position = CGPoint(x: 0, y: outfitListScrollOffset)
     }
 
     private func makeActionButton(text: String, width: CGFloat, height: CGFloat,
@@ -332,14 +409,14 @@ final class OutfitterScene: SKScene {
         centerContainer.removeAllChildren()
 
         guard !selectedOutfitName.isEmpty,
-              let def = OutfitRegistry.shared.outfit(named: selectedOutfitName)
+              let def = OutfitRegistry.shared.outfit(id: selectedOutfitName)
         else { return }
 
         let x   = centerLeft + 4
         var y   = contentTop - 16
 
         // Name
-        let nameLbl             = SKLabelNode(text: def.outfit)
+        let nameLbl             = SKLabelNode(text: def.displayName)
         nameLbl.fontName        = "AvenirNext-DemiBold"
         nameLbl.fontSize        = 13
         nameLbl.fontColor       = .white
@@ -365,19 +442,39 @@ final class OutfitterScene: SKScene {
 
         // Physical stats
         var statRows: [(String, String)] = []
-        if let v = def.mass         { statRows.append(("MASS",        "\(Int(v)) t")) }
-        if let v = def.outfitSpace  { statRows.append(("OUTFIT SPC",  "\(Int(abs(v)))")) }
-        if let v = def.weaponCapacity { statRows.append(("WEAPON CAP", "\(Int(abs(v)))")) }
-        if let v = def.engineCapacity { statRows.append(("ENGINE CAP", "\(Int(abs(v)))")) }
+        if let v = def.mass           { statRows.append(("MASS",        "\(Int(v)) t")) }
+        if let v = def.outfitSpace    { statRows.append(("OUTFIT SPC",  "\(Int(abs(v)))")) }
+        if let v = def.weaponCapacity { statRows.append(("WEAPON CAP",  "\(Int(abs(v)))")) }
+        if let v = def.engineCapacity { statRows.append(("ENGINE CAP",  "\(Int(abs(v)))")) }
+
+        // Power / shield / passive contributions
+        if let v = def.energyCapacity    { statRows.append(("ENERGY CAP",  "+\(Int(v))")) }
+        if let v = def.energyRecharge    { statRows.append(("ENERGY REG",  String(format: "+%.1f/s", v))) }
+        if let v = def.energyConsumption { statRows.append(("ENERGY DRAW", String(format: "%.1f/s", v))) }
+        if let v = def.shieldCapacity    { statRows.append(("SHIELD CAP",  "+\(Int(v))")) }
+        if let v = def.shieldRecharge    { statRows.append(("SHIELD REG",  String(format: "+%.1f/s", v))) }
+        if let v = def.heatGeneration    { statRows.append(("HEAT GEN",    String(format: "%.1f/s", v))) }
+
+        // Engines
+        if let v = def.thrust            { statRows.append(("THRUST",      "\(Int(v))")) }
+        if let v = def.thrustingEnergy   { statRows.append(("THRUST NRG",  String(format: "%.1f/s", v))) }
+        if let v = def.thrustingHeat     { statRows.append(("THRUST HEAT", String(format: "%.1f/s", v))) }
+        if let v = def.turn              { statRows.append(("TURN",        "\(Int(v))")) }
+        if let v = def.turningEnergy     { statRows.append(("TURN NRG",    String(format: "%.1f/s", v))) }
+        if let v = def.turningHeat       { statRows.append(("TURN HEAT",   String(format: "%.1f/s", v))) }
 
         // Weapon stats
         if let w = def.weapon {
             if let v = w.shieldDamage  { statRows.append(("SHIELD DMG",  String(format: "%.1f", v))) }
             if let v = w.hullDamage    { statRows.append(("HULL DMG",    String(format: "%.1f", v))) }
             if let v = w.velocity      { statRows.append(("VELOCITY",    "\(Int(v))")) }
+            if let v = w.lifetime      { statRows.append(("LIFETIME",    String(format: "%.1f", v))) }
             if let v = w.reload        { statRows.append(("RELOAD",      String(format: "%.1f", v))) }
             if let v = w.firingEnergy  { statRows.append(("FIRING NRG",  String(format: "%.2f", v))) }
+            if let v = w.firingHeat    { statRows.append(("FIRING HEAT", String(format: "%.2f", v))) }
             if let v = w.hitForce      { statRows.append(("HIT FORCE",   String(format: "%.0f", v))) }
+            if let v = w.blastRadius   { statRows.append(("BLAST",       "\(Int(v))")) }
+            if let v = w.turretTurn    { statRows.append(("TURRET TURN", String(format: "%.1f", v))) }
             if let v = w.inaccuracy    { statRows.append(("INACCURACY",  String(format: "%.1f°", v))) }
         }
 
@@ -475,50 +572,137 @@ final class OutfitterScene: SKScene {
         rightContainer.addChild(sep)
         y -= 12
 
-        // Section label
-        let instLbl             = SKLabelNode(text: "INSTALLED OUTFITS")
-        instLbl.fontName        = "AvenirNext-DemiBold"
-        instLbl.fontSize        = 10
-        instLbl.fontColor       = UIColor(white: 0.40, alpha: 1)
-        instLbl.horizontalAlignmentMode = .left
-        instLbl.verticalAlignmentMode   = .top
-        instLbl.position        = CGPoint(x: x, y: y)
-        rightContainer.addChild(instLbl)
+        // ── INVENTORY (two-column scrollable list) ──────────────────
+        let invLbl             = SKLabelNode(text: "INVENTORY")
+        invLbl.fontName        = "AvenirNext-DemiBold"
+        invLbl.fontSize        = 10
+        invLbl.fontColor       = UIColor(white: 0.40, alpha: 1)
+        invLbl.horizontalAlignmentMode = .left
+        invLbl.verticalAlignmentMode   = .top
+        invLbl.position        = CGPoint(x: x, y: y)
+        rightContainer.addChild(invLbl)
         y -= 16
 
-        // Installed outfit rows — show all, registry-defined first
-        let defined   = profile.installedOutfits.keys.filter {
-            OutfitRegistry.shared.outfit(named: $0) != nil }.sorted()
-        let undefined = profile.installedOutfits.keys.filter {
-            OutfitRegistry.shared.outfit(named: $0) == nil }.sorted()
-
         let panelRight = size.width / 2 - 16
-        for name in defined + undefined {
-            guard let count = profile.installedOutfits[name], y > contentBottom + 8 else { break }
-            let isSelected = (name == selectedOutfitName)
+        let panelWidth = panelRight - x
+        inventoryColumnLeftX  = x
+        inventoryColumnRightX = panelRight
 
-            if isSelected {
-                let hi = SKShapeNode(
-                    rect: CGRect(x: x - 4, y: y - 8, width: panelRight - x + 4, height: 16),
-                    cornerRadius: 3
-                )
-                hi.fillColor   = UIColor(red: 0.10, green: 0.28, blue: 0.52, alpha: 0.70)
-                hi.strokeColor = UIColor(red: 0.28, green: 0.60, blue: 1.0, alpha: 0.55)
-                hi.lineWidth   = 1
-                rightContainer.addChild(hi)
-            }
+        let listTop      = y
+        let listBottom   = contentBottom + 8
+        inventoryViewportHeight = listTop - listBottom
 
-            let txt             = count > 1 ? "\(name)  ×\(count)" : name
-            let lbl             = SKLabelNode(text: txt)
-            lbl.fontName        = "AvenirNextCondensed-Regular"
-            lbl.fontSize        = 10
-            lbl.fontColor       = isSelected ? .white : UIColor(white: 0.72, alpha: 1)
-            lbl.horizontalAlignmentMode = .left
-            lbl.verticalAlignmentMode   = .center
-            lbl.position        = CGPoint(x: x, y: y)
-            rightContainer.addChild(lbl)
-            y -= 18
+        // Crop node clips the scrollable list to its visible viewport.
+        let invCrop  = SKCropNode()
+        let invMaskW = panelRight - x
+        let imask    = SKSpriteNode(color: .white,
+                                    size: CGSize(width: invMaskW,
+                                                 height: inventoryViewportHeight))
+        imask.position = CGPoint(x: x + invMaskW / 2,
+                                 y: (listTop + listBottom) / 2)
+        invCrop.maskNode = imask
+        inventoryContainer = SKNode()
+        invCrop.addChild(inventoryContainer)
+        rightContainer.addChild(invCrop)
+
+        // Render categorised list (no boxes, ×N) — matching the shipyard
+        // exactly. Returns the laid-out height so we can clamp the
+        // scroll offset to the new content.
+        inventoryContentHeight = renderUnifiedInventoryList(
+            in: inventoryContainer,
+            originX: x, topY: listTop, width: panelWidth,
+            highlightOutfit: selectedOutfitName
+        )
+
+        let maxScroll = max(0, inventoryContentHeight - inventoryViewportHeight)
+        inventoryScrollOffset = max(0, min(maxScroll, inventoryScrollOffset))
+        inventoryContainer.position = CGPoint(x: 0, y: inventoryScrollOffset)
+    }
+
+    /// Categorised, single-column installed-outfits list shared in spirit
+    /// with `ShipyardScene`'s `renderInventoryRows` — no row backgrounds,
+    /// `×N` count, headers per category. Equipped outfits get a coloured
+    /// underline matching their mount kind; `highlightOutfit` (if set)
+    /// adds a brighter blue bar to surface the outfitter's currently-
+    /// selected shop item when it exists in the locker.
+    @discardableResult
+    private func renderUnifiedInventoryList(in parent: SKNode,
+                                            originX: CGFloat,
+                                            topY: CGFloat,
+                                            width: CGFloat,
+                                            highlightOutfit: String?) -> CGFloat {
+        let profile  = PlayerProfile.shared
+        var groups: [String: [String]] = [:]
+        for id in profile.installedOutfits.keys {
+            let bucket = HardpointKind.bucket(
+                forCategory: OutfitRegistry.shared.outfit(id: id)?.category)
+            groups[bucket, default: []].append(id)
         }
+        for cat in groups.keys {
+            groups[cat]!.sort {
+                let a = OutfitRegistry.shared.outfit(id: $0)?.displayName ?? $0
+                let b = OutfitRegistry.shared.outfit(id: $1)?.displayName ?? $1
+                return a < b
+            }
+        }
+        let categoryOrder = ["turret", "gun", "engine",
+                             "power", "shield", "weapon", "other"]
+        let known    = categoryOrder.filter { groups[$0] != nil && $0 != "other" }
+        let extra    = groups.keys
+            .filter { !categoryOrder.contains($0) && $0 != "other" }.sorted()
+        let trailing = groups["other"] != nil ? ["other"] : []
+        let order    = known + extra + trailing
+
+        let rowH: CGFloat = 18
+        // Start a few pixels below topY so the first centered category
+        // header fits entirely below the SKCropNode mask boundary.
+        var y = topY - 8
+        for cat in order {
+            let header             = SKLabelNode(text: cat.uppercased())
+            header.fontName        = "AvenirNext-DemiBold"
+            header.fontSize        = 9
+            header.fontColor       = UIColor(white: 0.55, alpha: 1)
+            header.horizontalAlignmentMode = .left
+            header.verticalAlignmentMode   = .center
+            header.position        = CGPoint(x: originX, y: y)
+            parent.addChild(header)
+            y -= rowH
+
+            for id in groups[cat] ?? [] {
+                let outfit = OutfitRegistry.shared.outfit(id: id)
+                let label = outfit?.displayName ?? id
+                let total = profile.installedOutfits[id] ?? 0
+                let txt   = total > 1 ? "\(label) ×\(total)" : label
+                let lbl   = SKLabelNode(text: txt)
+                lbl.fontName            = "AvenirNextCondensed-Regular"
+                lbl.fontSize            = 10
+                lbl.fontColor           = UIColor(white: 0.85, alpha: 1)
+                lbl.horizontalAlignmentMode = .left
+                lbl.verticalAlignmentMode   = .center
+                lbl.position            = CGPoint(x: originX + 4, y: y)
+                lbl.preferredMaxLayoutWidth = max(40, width - 8)
+                parent.addChild(lbl)
+
+                // Shop-selection highlight — bright blue bar above the
+                // underline so it doesn't fight the mount colour.
+                if id == highlightOutfit {
+                    let bg = SKShapeNode(
+                        rect: CGRect(x: originX, y: y - rowH / 2 + 1,
+                                     width: width - 2, height: rowH - 2),
+                        cornerRadius: 3
+                    )
+                    bg.fillColor   = UIColor(red: 0.10, green: 0.30, blue: 0.65, alpha: 0.45)
+                    bg.strokeColor = UIColor(red: 0.45, green: 0.80, blue: 1.00, alpha: 0.80)
+                    bg.lineWidth   = 1
+                    bg.zPosition   = -1
+                    parent.addChild(bg)
+                }
+
+                y -= rowH
+            }
+            y -= 4
+        }
+        return topY - y
     }
 
     private func addCapacityBar(label: String, used: Double, total: Double,
@@ -590,16 +774,7 @@ final class OutfitterScene: SKScene {
     private func selectOutfit(name: String) {
         guard name != selectedOutfitName else { return }
         selectedOutfitName = name
-        // Update row highlight colours
-        for (bg, n) in rowBgNodes {
-            let sel       = (n == name)
-            bg.fillColor  = sel
-                ? UIColor(red: 0.10, green: 0.28, blue: 0.52, alpha: 0.85)
-                : UIColor(white: 0.06, alpha: 0.80)
-            bg.strokeColor = sel
-                ? UIColor(red: 0.28, green: 0.60, blue: 1.0, alpha: 0.60)
-                : UIColor(white: 0.18, alpha: 0.45)
-        }
+        buildOutfitList()
         buildCenterPanel()
         buildRightPanel()
     }
@@ -618,16 +793,88 @@ final class OutfitterScene: SKScene {
         guard let touch = touches.first else { return }
         let pt = touch.location(in: self)
 
+        // Static (non-scrolling) buttons — exact frame, no offset.
         for (node, action) in staticButtons where node.contains(pt) {
             flash(node); action(); return
         }
-        // Buy/sell take priority over row selection
-        for (node, action) in outfitButtons where node.contains(pt) {
-            flash(node); action(); return
+        // Buy/sell live inside the scrollable list container — convert
+        // the scene-space point into each button's parent coord space.
+        for (node, action) in outfitButtons {
+            guard let parent = node.parent else { continue }
+            let local = parent.convert(pt, from: self)
+            if node.contains(local) {
+                flash(node); action(); return
+            }
         }
-        for (bg, name) in rowBgNodes where bg.contains(pt) {
-            selectOutfit(name: name); return
+        // Inventory column (right panel) gets its own scroll tracker so
+        // it pans independently of the catalogue list on the left.
+        if pt.x >= rightLeft && pt.x <= size.width / 2 - 16 {
+            inventoryDragStarted     = true
+            inventoryDragLastY       = pt.y
+            inventoryDragMovedEnough = false
+            return
         }
+        // Anywhere else inside the catalogue column starts a scroll drag.
+        if pt.x >= listLeft && pt.x <= listLeft + listW {
+            dragStartedInList = true
+            dragLastY         = pt.y
+            dragMovedEnough   = false
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        let pt = touch.location(in: self)
+
+        if inventoryDragStarted {
+            let dy = pt.y - inventoryDragLastY
+            inventoryDragLastY = pt.y
+            if abs(dy) > 2 { inventoryDragMovedEnough = true }
+            if inventoryDragMovedEnough {
+                let maxScroll = max(0, inventoryContentHeight - inventoryViewportHeight)
+                inventoryScrollOffset = max(0, min(maxScroll,
+                                                   inventoryScrollOffset + dy))
+                inventoryContainer.position = CGPoint(x: 0, y: inventoryScrollOffset)
+            }
+            return
+        }
+        guard dragStartedInList else { return }
+        let dy = pt.y - dragLastY
+        dragLastY = pt.y
+        if abs(dy) > 2 { dragMovedEnough = true }
+        if dragMovedEnough {
+            // Drag UP scrolls the list UP (drag-down reveals upper rows).
+            let maxScroll = max(0, outfitListContentHeight - outfitListViewportHeight)
+            outfitListScrollOffset = max(0, min(maxScroll,
+                                                outfitListScrollOffset + dy))
+            outfitListContainer.position = CGPoint(x: 0, y: outfitListScrollOffset)
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        defer {
+            dragStartedInList        = false
+            dragMovedEnough          = false
+            inventoryDragStarted     = false
+            inventoryDragMovedEnough = false
+        }
+        guard let touch = touches.first,
+              dragStartedInList, !dragMovedEnough else { return }
+        let pt = touch.location(in: self)
+        for (bg, name) in rowBgNodes {
+            guard let parent = bg.parent else { continue }
+            let local = parent.convert(pt, from: self)
+            if bg.contains(local) {
+                selectOutfit(name: name); return
+            }
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        dragStartedInList        = false
+        dragMovedEnough          = false
+        inventoryDragStarted     = false
+        inventoryDragMovedEnough = false
     }
 
     private func flash(_ node: SKShapeNode) {

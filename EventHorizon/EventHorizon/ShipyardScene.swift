@@ -17,6 +17,47 @@ final class ShipyardScene: SKScene {
     private var shipRowBgs:     [(bg: SKShapeNode, shipID: String)] = []
     private var tab2StatsNode:  SKNode!
 
+    // Tab 1 hardpoint customisation state — mirrors the outfitter so the
+    // player can also customise mount assignments straight from the
+    // shipyard's MY SHIP view.
+    private struct HardpointMarker {
+        let slot: String                // e.g. "turret_0"
+        let kind: HardpointKind
+        let node: SKShapeNode
+        let label: SKLabelNode
+    }
+    private var hardpointMarkers: [HardpointMarker] = []
+    /// `(node, outfitID, sourceSlot)` — `sourceSlot` is `nil` for icons
+    /// in the inventory column (a fresh assignment); it's the slot key
+    /// when the drag started on a hardpoint marker so the source can be
+    /// vacated on drop.
+    private var inventoryIconHits: [(node: SKNode, outfitID: String, sourceSlot: String?)] = []
+    private var dragOutfitID:   String?
+    private var dragSourceSlot: String?
+    private var dragGhost:      SKNode?
+    private var dragHoverSlot:  String?
+    private var lastDragPoint:  CGPoint = .zero
+
+    // Scrollable inventory columns — separate for WEAPONS (col 3) and
+    // ALL OUTFITS (col 4) so they pan independently.
+    private var weaponsListContainer = SKNode()
+    private var weaponsListScroll:    CGFloat = 0
+    private var weaponsListHeight:    CGFloat = 0
+    private var weaponsListViewport:  CGFloat = 0
+    private var allListContainer     = SKNode()
+    private var allListScroll:        CGFloat = 0
+    private var allListHeight:        CGFloat = 0
+    private var allListViewport:      CGFloat = 0
+    /// X-range tags so `touchesMoved` knows which column owns the drag.
+    private var weaponsListXRange:   ClosedRange<CGFloat> = 0...0
+    private var allListXRange:       ClosedRange<CGFloat> = 0...0
+    private enum ActiveScroll { case none, weapons, all }
+    private var activeScroll: ActiveScroll = .none
+    private var scrollLastY: CGFloat = 0
+    private var scrollMovedEnough = false
+
+    private enum RowHighlightStyle { case fillBox, none }
+
     // All tappable buttons (back, tab switches, BUY). Row-bg selection is
     // handled separately in touchesBegan so BUY always wins over the row tap.
     private var buttons: [(node: SKShapeNode, action: () -> Void)] = []
@@ -144,7 +185,7 @@ final class ShipyardScene: SKScene {
         tab2Container.isHidden = (index != 1)
     }
 
-    // MARK: – Tab 1: My Ship
+    // MARK: – Tab 1: My Ship (thumbnail + hardpoints + draggable inventory)
 
     private func buildTab1() {
         let hw = size.width  / 2
@@ -155,6 +196,10 @@ final class ShipyardScene: SKScene {
         addChild(container)
         tab1Container = container
 
+        // Reset per-tab1 customisation state.
+        hardpointMarkers.removeAll()
+        inventoryIconHits.removeAll()
+
         let contentTop:    CGFloat = hh  - 88
         let contentBottom: CGFloat = -hh + 16
         let midY           = (contentTop + contentBottom) / 2
@@ -163,12 +208,13 @@ final class ShipyardScene: SKScene {
         let metadata = profile.currentShip
         let def      = profile.currentShipDef
 
-        // ── Left: ship thumbnail ─────────────────────────────────────────────
-        let thumbSize = CGSize(width: 170, height: 170)
+        // ── Left column: ship thumbnail + hardpoint markers ─────────────────
+        let thumbSize = CGSize(width: 200, height: 200)
         let thumbX    = -hw + 24 + thumbSize.width / 2
+        let thumbY    = midY + 8
 
         let thumb = ShipNode.staticThumbnail(metadata: metadata, viewportSize: thumbSize)
-        thumb.position = CGPoint(x: thumbX, y: midY + 10)
+        thumb.position = CGPoint(x: thumbX, y: thumbY)
         container.addChild(thumb)
 
         let nameLbl             = SKLabelNode(text: metadata.displayName.uppercased())
@@ -177,7 +223,7 @@ final class ShipyardScene: SKScene {
         nameLbl.fontColor       = .white
         nameLbl.horizontalAlignmentMode = .center
         nameLbl.verticalAlignmentMode   = .top
-        nameLbl.position        = CGPoint(x: thumbX, y: midY + 10 - thumbSize.height / 2 - 4)
+        nameLbl.position        = CGPoint(x: thumbX, y: thumbY - thumbSize.height / 2 - 4)
         container.addChild(nameLbl)
 
         let catLbl             = SKLabelNode(text: (def?.attributes.category ?? "Unknown").uppercased())
@@ -186,27 +232,43 @@ final class ShipyardScene: SKScene {
         catLbl.fontColor       = UIColor(white: 0.45, alpha: 1)
         catLbl.horizontalAlignmentMode = .center
         catLbl.verticalAlignmentMode   = .top
-        catLbl.position        = CGPoint(x: thumbX, y: midY + 10 - thumbSize.height / 2 - 18)
+        catLbl.position        = CGPoint(x: thumbX, y: thumbY - thumbSize.height / 2 - 18)
         container.addChild(catLbl)
 
-        // ── Vertical divider ─────────────────────────────────────────────────
-        let divX     = -hw + 24 + thumbSize.width + 18
-        let divLine  = SKShapeNode()
-        let divPath  = CGMutablePath()
-        divPath.move(to:    CGPoint(x: divX, y: contentTop - 6))
-        divPath.addLine(to: CGPoint(x: divX, y: contentBottom + 6))
-        divLine.path        = divPath
-        divLine.strokeColor = UIColor(white: 1, alpha: 0.10)
-        divLine.lineWidth   = 1
-        container.addChild(divLine)
+        // Hardpoint markers — turret/gun/engine, each in its theme colour
+        // (see `HardpointKind.color`). Body-local coords are scaled to
+        // the thumbnail's pixel size.
+        let viewW    = metadata.viewportSize.width
+        let scale    = thumbSize.width / max(1, viewW)
+        for (i, mount) in (def?.turrets ?? []).enumerated() {
+            installHardpointMarker(slot: "turret_\(i)", kind: .turret, mount: mount,
+                                   weaponID: profile.mountAssignments["turret_\(i)"],
+                                   centerX: thumbX, centerY: thumbY, scale: scale,
+                                   parent: container)
+        }
+        for (i, mount) in (def?.guns ?? []).enumerated() {
+            installHardpointMarker(slot: "gun_\(i)", kind: .gun, mount: mount,
+                                   weaponID: profile.mountAssignments["gun_\(i)"],
+                                   centerX: thumbX, centerY: thumbY, scale: scale,
+                                   parent: container)
+        }
+        for (i, mount) in (def?.engines ?? []).enumerated() {
+            installHardpointMarker(slot: "engine_\(i)", kind: .engine, mount: mount,
+                                   weaponID: profile.mountAssignments["engine_\(i)"],
+                                   centerX: thumbX, centerY: thumbY, scale: scale,
+                                   parent: container)
+        }
 
-        // ── Right side: stats column + outfits column ────────────────────────
-        let rightStart = divX + 18
-        let rightWidth = hw - 16 - rightStart
-        let statsColW: CGFloat = min(200, rightWidth * 0.45)
-        let outfitColX = rightStart + statsColW + 18
+        // ── Vertical divider 1 ──────────────────────────────────────────────
+        let divX     = -hw + 24 + thumbSize.width + 24
+        addVDivider(x: divX, top: contentTop - 6, bottom: contentBottom + 6,
+                    parent: container)
 
-        addSectionHeader("ATTRIBUTES", x: rightStart, y: contentTop - 4, parent: container)
+        // ── Middle: ATTRIBUTES stats column ─────────────────────────────────
+        let middleStart    = divX + 16
+        let middleColWidth: CGFloat = 180
+
+        addSectionHeader("ATTRIBUTES", x: middleStart, y: contentTop - 4, parent: container)
 
         let a = def?.attributes
         let statsRows: [(String, String)] = [
@@ -222,26 +284,254 @@ final class ShipyardScene: SKScene {
 
         var sy = contentTop - 22
         for (key, val) in statsRows {
-            addStatRow(key: key, value: val, x: rightStart, y: sy, parent: container)
+            addStatRow(key: key, value: val, x: middleStart, y: sy, parent: container)
             sy -= 21
         }
 
-        addSectionHeader("OUTFITS", x: outfitColX, y: contentTop - 4, parent: container)
+        // ── Vertical divider 2 ──────────────────────────────────────────────
+        let weaponsX = middleStart + middleColWidth + 12
+        addVDivider(x: weaponsX, top: contentTop - 6, bottom: contentBottom + 6,
+                    parent: container)
 
-        var oy = contentTop - 22
-        for outfit in def?.outfits ?? [] {
-            let txt = outfit.count > 1 ? "\(outfit.count)× \(outfit.name)" : outfit.name
-            let lbl = SKLabelNode(text: txt)
-            lbl.fontName                  = "AvenirNextCondensed-Regular"
-            lbl.fontSize                  = 11
-            lbl.fontColor                 = UIColor(white: 0.72, alpha: 1)
-            lbl.horizontalAlignmentMode   = .left
-            lbl.verticalAlignmentMode     = .center
-            lbl.position                  = CGPoint(x: outfitColX, y: oy)
-            container.addChild(lbl)
-            oy -= 17
-            if oy < contentBottom + 8 { break }
+        // ── Column 3: WEAPONS + ENGINES (drag → hardpoint) ──────────────────
+        let weaponsLeft   = weaponsX + 12
+        let weaponsWidth: CGFloat = 200
+        addSectionHeader("LOADOUT  (drag to hardpoint)",
+                         x: weaponsLeft, y: contentTop - 4, parent: container)
+        let weaponsTop    = contentTop - 22
+        let weaponsBottom = contentBottom + 8
+        weaponsListViewport = weaponsTop - weaponsBottom
+        weaponsListXRange   = weaponsLeft ... (weaponsLeft + weaponsWidth)
+        let weaponsCrop = SKCropNode()
+        let wmask = SKSpriteNode(color: .white,
+                                 size: CGSize(width: weaponsWidth, height: weaponsListViewport))
+        wmask.position = CGPoint(x: weaponsLeft + weaponsWidth / 2,
+                                 y: (weaponsTop + weaponsBottom) / 2)
+        weaponsCrop.maskNode = wmask
+        weaponsListContainer = SKNode()
+        weaponsCrop.addChild(weaponsListContainer)
+        container.addChild(weaponsCrop)
+        weaponsListHeight   = renderInventoryRows(
+            in: weaponsListContainer,
+            originX: weaponsLeft, topY: weaponsTop, width: weaponsWidth,
+            filter: { outfit in
+                guard let o = outfit else { return false }
+                let b = HardpointKind.bucket(forCategory: o.category)
+                return b == "turret" || b == "gun" || b == "engine"
+            },
+            highlightStyle: .fillBox,
+            registerDragIcons: true
+        )
+        let maxWeaponsScroll = max(0, weaponsListHeight - weaponsListViewport)
+        weaponsListScroll = max(0, min(maxWeaponsScroll, weaponsListScroll))
+        weaponsListContainer.position = CGPoint(x: 0, y: weaponsListScroll)
+
+        // ── Vertical divider 3 ──────────────────────────────────────────────
+        let allX = weaponsLeft + weaponsWidth + 12
+        addVDivider(x: allX, top: contentTop - 6, bottom: contentBottom + 6,
+                    parent: container)
+
+        // ── Column 4: ALL OUTFITS by category (read-only) ───────────────────
+        let allLeft  = allX + 12
+        let allWidth = hw - 16 - allLeft
+        addSectionHeader("INVENTORY  (by category)",
+                         x: allLeft, y: contentTop - 4, parent: container)
+        let allTop    = contentTop - 22
+        let allBottom = contentBottom + 8
+        allListViewport = allTop - allBottom
+        allListXRange   = allLeft ... (allLeft + allWidth)
+        let allCrop = SKCropNode()
+        let amask = SKSpriteNode(color: .white,
+                                 size: CGSize(width: allWidth, height: allListViewport))
+        amask.position = CGPoint(x: allLeft + allWidth / 2,
+                                 y: (allTop + allBottom) / 2)
+        allCrop.maskNode = amask
+        allListContainer = SKNode()
+        allCrop.addChild(allListContainer)
+        container.addChild(allCrop)
+        allListHeight   = renderInventoryRows(
+            in: allListContainer,
+            originX: allLeft, topY: allTop, width: allWidth,
+            filter: { _ in true },
+            highlightStyle: .none,
+            registerDragIcons: false
+        )
+        let maxAllScroll = max(0, allListHeight - allListViewport)
+        allListScroll = max(0, min(maxAllScroll, allListScroll))
+        allListContainer.position = CGPoint(x: 0, y: allListScroll)
+    }
+
+    /// Lays out a categorised installed-outfits list inside `parent`.
+    /// All rows render with no background box, in a single column, with
+    /// `×N` notation for counts. Headers separate categories; outfits
+    /// with no `category` fall into "OTHER". Returns the total laid-out
+    /// height so the caller can configure scroll bounds.
+    ///
+    /// Rows whose weapon is currently assigned to a hardpoint slot get a
+    /// thin coloured underline matching the slot's kind (amber turret,
+    /// red gun, green engine) per the request to "match the color of
+    /// the node they belong to".
+    @discardableResult
+    private func renderInventoryRows(in parent: SKNode,
+                                     originX: CGFloat,
+                                     topY: CGFloat,
+                                     width: CGFloat,
+                                     filter: (OutfitDef?) -> Bool,
+                                     highlightStyle: RowHighlightStyle,
+                                     registerDragIcons: Bool) -> CGFloat {
+        let profile = PlayerProfile.shared
+        // Group by HardpointKind bucket so the same outfit doesn't end up
+        // in two places when its raw category alias differs.
+        var groups: [String: [String]] = [:]
+        for id in profile.installedOutfits.keys {
+            let outfit = OutfitRegistry.shared.outfit(id: id)
+            if !filter(outfit) { continue }
+            let bucket = HardpointKind.bucket(forCategory: outfit?.category)
+            groups[bucket, default: []].append(id)
         }
+        for cat in groups.keys {
+            groups[cat]!.sort {
+                let a = OutfitRegistry.shared.outfit(id: $0)?.displayName ?? $0
+                let b = OutfitRegistry.shared.outfit(id: $1)?.displayName ?? $1
+                return a < b
+            }
+        }
+        let categoryOrder = ["turret", "gun", "engine",
+                             "power", "shield", "weapon", "other"]
+        let known   = categoryOrder.filter { groups[$0] != nil && $0 != "other" }
+        let extra   = groups.keys.filter { !categoryOrder.contains($0) && $0 != "other" }.sorted()
+        let trailing = groups["other"] != nil ? ["other"] : []
+        let order    = known + extra + trailing
+
+        let iconSize: CGFloat = 18
+        let rowH:     CGFloat = 18
+        // Start a few pixels below topY so the first centered category
+        // header fits entirely below the SKCropNode mask boundary.
+        var y = topY - 8
+        for cat in order {
+            let header             = SKLabelNode(text: cat.uppercased())
+            header.fontName        = "AvenirNext-DemiBold"
+            header.fontSize        = 9
+            header.fontColor       = UIColor(white: 0.55, alpha: 1)
+            header.horizontalAlignmentMode = .left
+            header.verticalAlignmentMode   = .center
+            header.position        = CGPoint(x: originX, y: y)
+            parent.addChild(header)
+            y -= rowH
+
+            for id in groups[cat] ?? [] {
+                let outfit = OutfitRegistry.shared.outfit(id: id)
+                // LOADOUT col keeps icons because they're the drag handle;
+                // read-only INVENTORY col drops them entirely.
+                let labelX: CGFloat
+                if registerDragIcons {
+                    let icon = outfitCategoryIcon(category: outfit?.category, size: iconSize)
+                    icon.position = CGPoint(x: originX + iconSize / 2, y: y)
+                    parent.addChild(icon)
+                    inventoryIconHits.append((icon, id, nil))
+                    labelX = originX + iconSize + 6
+                } else {
+                    labelX = originX + 4
+                }
+                let label = outfit?.displayName ?? id
+                let total = profile.installedOutfits[id] ?? 0
+                let txt   = total > 1 ? "\(label) ×\(total)" : label
+                let lbl   = SKLabelNode(text: txt)
+                lbl.fontName            = "AvenirNextCondensed-Regular"
+                lbl.fontSize            = 10
+                lbl.fontColor           = UIColor(white: 0.85, alpha: 1)
+                lbl.horizontalAlignmentMode = .left
+                lbl.verticalAlignmentMode   = .center
+                lbl.position            = CGPoint(x: labelX, y: y)
+                lbl.preferredMaxLayoutWidth = max(40, width - (labelX - originX) - 4)
+                parent.addChild(lbl)
+
+                // Filled box behind equipped rows (LOADOUT col only).
+                if case .fillBox = highlightStyle,
+                   let kind = equippedKind(forOutfitID: id) {
+                    let bg = SKShapeNode(
+                        rect: CGRect(x: originX, y: y - rowH / 2,
+                                     width: width, height: rowH),
+                        cornerRadius: 3
+                    )
+                    bg.fillColor   = kind.color.withAlphaComponent(0.28)
+                    bg.strokeColor = .clear
+                    bg.zPosition   = -1
+                    parent.addChild(bg)
+                }
+
+                y -= rowH
+            }
+            y -= 4
+        }
+        return topY - y
+    }
+
+    /// Determines which kind of mount this outfit is currently equipped
+    /// at (if any). Used for the row's coloured outline. If equipped on
+    /// multiple kinds at once (shouldn't happen with the type filter)
+    /// the first match wins.
+    private func equippedKind(forOutfitID outfitID: String) -> HardpointKind? {
+        for (slot, oid) in PlayerProfile.shared.mountAssignments
+            where oid == outfitID {
+            if let kind = HardpointKind(slotKey: slot) { return kind }
+        }
+        return nil
+    }
+
+    /// Adds a hardpoint marker dot at the mount's body-local position,
+    /// scaled into the on-screen thumbnail. Marker colour comes from
+    /// `HardpointKind` so turret/gun/engine markers are visually
+    /// distinct. The accompanying label shows the assigned outfit's
+    /// full display name (or "empty").
+    private func installHardpointMarker(slot: String,
+                                         kind: HardpointKind,
+                                         mount: ShipDef.Hardpoint,
+                                         weaponID: String?,
+                                         centerX: CGFloat, centerY: CGFloat,
+                                         scale: CGFloat,
+                                         parent: SKNode) {
+        let mx = centerX + CGFloat(mount.x) * scale
+        let my = centerY + CGFloat(mount.y) * scale
+        let color = kind.color
+        let dot = SKShapeNode(circleOfRadius: 7)
+        dot.fillColor   = color.withAlphaComponent(weaponID == nil ? 0.18 : 0.85)
+        dot.strokeColor = color
+        dot.lineWidth   = 1.5
+        dot.position    = CGPoint(x: mx, y: my)
+        dot.zPosition   = 10
+        parent.addChild(dot)
+
+        let txt: String
+        if let wid = weaponID,
+           let display = OutfitRegistry.shared.outfit(id: wid)?.displayName {
+            txt = display
+        } else { txt = "empty" }
+        let lbl             = SKLabelNode(text: txt)
+        lbl.fontName        = "AvenirNextCondensed-DemiBold"
+        lbl.fontSize        = 8
+        lbl.fontColor       = (weaponID == nil)
+            ? UIColor(white: 0.55, alpha: 1)
+            : .white
+        let onLeft          = mount.x < 0
+        lbl.horizontalAlignmentMode = onLeft ? .right : .left
+        lbl.verticalAlignmentMode   = .center
+        lbl.position        = CGPoint(x: mx + (onLeft ? -10 : 10), y: my)
+        lbl.zPosition       = 11
+        parent.addChild(lbl)
+
+        hardpointMarkers.append(.init(slot: slot, kind: kind, node: dot, label: lbl))
+    }
+
+    private func addVDivider(x: CGFloat, top: CGFloat, bottom: CGFloat, parent: SKNode) {
+        let line = SKShapeNode()
+        let p    = CGMutablePath()
+        p.move(to:    CGPoint(x: x, y: top))
+        p.addLine(to: CGPoint(x: x, y: bottom))
+        line.path        = p
+        line.strokeColor = UIColor(white: 1, alpha: 0.10)
+        line.lineWidth   = 1
+        parent.addChild(line)
     }
 
     // MARK: – Tab 2: For Sale
@@ -428,19 +718,33 @@ final class ShipyardScene: SKScene {
         addSectionHeader("OUTFITS", x: outfitColX, y: contentTop - 22, parent: tab2StatsNode)
 
         let contentBottom: CGFloat = -size.height / 2 + 16
-        var oy = contentTop - 40
-        for outfit in def.outfits ?? [] {
-            let txt = outfit.count > 1 ? "\(outfit.count)× \(outfit.name)" : outfit.name
+        let outfitsList = def.outfits ?? []
+        let oTop        = contentTop - 40
+        let rowH:    CGFloat = 17
+        let available   = oTop - (contentBottom + 8)
+        let perColumn   = max(1, Int(available / rowH))
+        let useTwoCols  = outfitsList.count > perColumn
+        let colWidth    = (hw - 16 - outfitColX) / 2
+        let secondColX  = outfitColX + colWidth
+
+        for (i, outfit) in outfitsList.enumerated() {
+            let col: Int = useTwoCols ? (i / perColumn) : 0
+            let row: Int = useTwoCols ? (i % perColumn) : i
+            if col > 1 { break }
+            let colX = (col == 0) ? outfitColX : secondColX
+            let rowY = oTop - CGFloat(row) * rowH
+            if rowY < contentBottom + 8 { break }
+
+            let label = OutfitRegistry.shared.outfit(id: outfit.name)?.displayName ?? outfit.name
+            let txt   = outfit.count > 1 ? "\(outfit.count)× \(label)" : label
             let lbl = SKLabelNode(text: txt)
             lbl.fontName                  = "AvenirNextCondensed-Regular"
             lbl.fontSize                  = 11
             lbl.fontColor                 = UIColor(white: 0.72, alpha: 1)
             lbl.horizontalAlignmentMode   = .left
             lbl.verticalAlignmentMode     = .center
-            lbl.position                  = CGPoint(x: outfitColX, y: oy)
+            lbl.position                  = CGPoint(x: colX, y: rowY)
             tab2StatsNode.addChild(lbl)
-            oy -= 17
-            if oy < contentBottom + 8 { break }
         }
     }
 
@@ -493,11 +797,205 @@ final class ShipyardScene: SKScene {
             return
         }
 
-        // Row background — selection only, lower priority than BUY.
+        if activeTab == 0 {
+            // 1. Did the touch land on a hardpoint marker that already
+            //    has a weapon? If so, start a drag with that weapon
+            //    (source slot captured so `endDrag` can move it).
+            for marker in hardpointMarkers {
+                let dx = pt.x - marker.node.position.x
+                let dy = pt.y - marker.node.position.y
+                if hypot(dx, dy) < 16 {
+                    if let oid = PlayerProfile.shared.mountAssignments[marker.slot] {
+                        beginDrag(outfitID: oid, sourceSlot: marker.slot, at: pt)
+                    }
+                    return   // a tap on a marker never falls through to scroll/select
+                }
+            }
+            // 2. Inventory icon? Begin a drag from the captain's locker.
+            for hit in inventoryIconHits {
+                guard let parent = hit.node.parent else { continue }
+                let local = parent.convert(pt, from: self)
+                if hit.node.contains(local) {
+                    beginDrag(outfitID: hit.outfitID,
+                              sourceSlot: hit.sourceSlot, at: pt)
+                    return
+                }
+            }
+            // 3. Otherwise — if the touch is inside one of the two
+            //    inventory columns, start a scroll there.
+            if weaponsListXRange.contains(pt.x) {
+                activeScroll      = .weapons
+                scrollLastY       = pt.y
+                scrollMovedEnough = false
+                return
+            }
+            if allListXRange.contains(pt.x) {
+                activeScroll      = .all
+                scrollLastY       = pt.y
+                scrollMovedEnough = false
+                return
+            }
+        }
+
+        // Row background — ship selection on tab 2.
         for (bg, sid) in shipRowBgs where bg.contains(pt) {
             selectShip(id: sid)
             return
         }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        let pt = touch.location(in: self)
+
+        if dragOutfitID != nil {
+            dragGhost?.position = pt
+            updateDragHover(at: pt)
+            lastDragPoint = pt
+            return
+        }
+        switch activeScroll {
+        case .weapons:
+            let dy = pt.y - scrollLastY
+            scrollLastY = pt.y
+            if abs(dy) > 2 { scrollMovedEnough = true }
+            if scrollMovedEnough {
+                let maxScroll = max(0, weaponsListHeight - weaponsListViewport)
+                weaponsListScroll = max(0, min(maxScroll, weaponsListScroll + dy))
+                weaponsListContainer.position = CGPoint(x: 0, y: weaponsListScroll)
+            }
+        case .all:
+            let dy = pt.y - scrollLastY
+            scrollLastY = pt.y
+            if abs(dy) > 2 { scrollMovedEnough = true }
+            if scrollMovedEnough {
+                let maxScroll = max(0, allListHeight - allListViewport)
+                allListScroll = max(0, min(maxScroll, allListScroll + dy))
+                allListContainer.position = CGPoint(x: 0, y: allListScroll)
+            }
+        case .none:
+            break
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        defer {
+            activeScroll      = .none
+            scrollMovedEnough = false
+        }
+        guard let touch = touches.first else { return }
+        let pt = touch.location(in: self)
+        if let outfitID = dragOutfitID {
+            endDrag(at: pt, outfitID: outfitID)
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        cancelDrag()
+        activeScroll      = .none
+        scrollMovedEnough = false
+    }
+
+    // MARK: – Drag-to-assign
+
+    private func beginDrag(outfitID: String, sourceSlot: String?, at pt: CGPoint) {
+        dragOutfitID   = outfitID
+        dragSourceSlot = sourceSlot
+        let category   = OutfitRegistry.shared.outfit(id: outfitID)?.category
+        let ghost      = outfitCategoryIcon(category: category, size: 30)
+        ghost.alpha     = 0.75
+        ghost.zPosition = 1000
+        ghost.position  = pt
+        addChild(ghost)
+        dragGhost = ghost
+    }
+
+    /// Highlights a compatible marker as the finger passes over it. Only
+    /// markers whose `kind` accepts the dragged outfit are eligible —
+    /// turret weapons can't preview-drop into gun mounts, etc.
+    private func updateDragHover(at pt: CGPoint) {
+        guard let oid = dragOutfitID,
+              let outfit = OutfitRegistry.shared.outfit(id: oid) else { return }
+        var nearestSlot: String?
+        var nearestDist: CGFloat = 24      // hit + a touch of hover slack
+        for marker in hardpointMarkers {
+            guard marker.kind.accepts(category: outfit.category) else { continue }
+            let dx = pt.x - marker.node.position.x
+            let dy = pt.y - marker.node.position.y
+            let d  = hypot(dx, dy)
+            if d < nearestDist {
+                nearestDist = d
+                nearestSlot = marker.slot
+            }
+        }
+        if nearestSlot == dragHoverSlot { return }
+        // Reset previous hover's appearance.
+        if let prev = dragHoverSlot,
+           let m    = hardpointMarkers.first(where: { $0.slot == prev }) {
+            applyHover(marker: m, on: false)
+        }
+        if let next = nearestSlot,
+           let m    = hardpointMarkers.first(where: { $0.slot == next }) {
+            applyHover(marker: m, on: true)
+        }
+        dragHoverSlot = nearestSlot
+    }
+
+    private func applyHover(marker: HardpointMarker, on: Bool) {
+        marker.node.setScale(on ? 1.4 : 1.0)
+        marker.node.fillColor = on
+            ? marker.kind.color
+            : marker.kind.color.withAlphaComponent(
+                PlayerProfile.shared.mountAssignments[marker.slot] == nil ? 0.18 : 0.85
+            )
+    }
+
+    private func endDrag(at pt: CGPoint, outfitID: String) {
+        // Prefer the hover-highlighted slot when present (it's already
+        // type-validated); otherwise scan all markers in case the user
+        // released without ever moving over a valid one.
+        let targetSlot: String? = dragHoverSlot ?? {
+            let outfit = OutfitRegistry.shared.outfit(id: outfitID)
+            for marker in hardpointMarkers {
+                guard marker.kind.accepts(category: outfit?.category) else { continue }
+                let dx = pt.x - marker.node.position.x
+                let dy = pt.y - marker.node.position.y
+                if hypot(dx, dy) < 16 { return marker.slot }
+            }
+            return nil
+        }()
+        defer { cancelDrag() }
+        guard let target = targetSlot else { return }
+        let profile = PlayerProfile.shared
+        let changed: Bool
+        if let source = dragSourceSlot, source != target {
+            // Drag started on a marker — always go through swap so the
+            // source slot is the deterministic donor (target gets the
+            // dragged item, source either gets target's old item or
+            // becomes empty). Avoids assignWeaponToMount's arbitrary
+            // donor-fallback when inventory is exhausted.
+            changed = profile.swapMountAssignments(slot1: source, slot2: target)
+        } else {
+            changed = profile.assignWeaponToMount(outfitID, slot: target)
+        }
+        guard changed else { return }
+        profile.persistCurrentSave()
+        tab1Container.removeFromParent()
+        buildTab1()
+        showTab(activeTab)
+    }
+
+    private func cancelDrag() {
+        // Clear hover state on any marker we may have highlighted.
+        if let prev = dragHoverSlot,
+           let m    = hardpointMarkers.first(where: { $0.slot == prev }) {
+            applyHover(marker: m, on: false)
+        }
+        dragHoverSlot = nil
+        dragGhost?.removeFromParent()
+        dragGhost      = nil
+        dragOutfitID   = nil
+        dragSourceSlot = nil
     }
 
     private func flash(_ node: SKShapeNode) {

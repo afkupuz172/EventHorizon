@@ -1,15 +1,15 @@
 {
   "name": "Home System",
   "pos": [-7, 232],
-  "government": "Pirate",
+  "government": "pirate",
   "attributes": ["core"],
-  "links": ["Schedar"],
-  "lightingEnvironment": "HDR_multi_nebulae",
+  "links": ["schedar"],
+  "lighting_environment": "HDR_multi_nebulae",
   "suns": [
     {
       "id":           "sol",
       "sprite":       "yellow_sun",
-      "displayName":  "Sol",
+      "display_name": "Sol",
       "radius":       420,
       "location":     {"x": 0, "y": 0},
       "orbit":        0
@@ -17,41 +17,41 @@
   ],
   "planets": [
     {
-      "id":          "hadrian",
-      "sprite":      "rock_planet",
-      "displayName": "Hadrian",
-      "radius":      260,
-      "location":    "sol",
-      "orbit":       2600,
-      "services":    ["bar", "trade", "shipyard", "outfitter", "bank"]
+      "id":           "hadrian",
+      "sprite":       "rock_planet",
+      "display_name": "Hadrian",
+      "radius":       260,
+      "location":     "sol",
+      "orbit":        2600,
+      "services":     ["bar", "trade", "shipyard", "outfitter", "bank"]
     }
   ],
   "asteroids": {
-    "count":         10,
-    "spreadRadius":  4400,
-    "minRadius":     35,
-    "maxRadius":     85,
-    "minSpinPeriod": 8.0,
-    "maxSpinPeriod": 28.0
+    "count":           10,
+    "spread_radius":   4400,
+    "min_radius":      35,
+    "max_radius":      85,
+    "min_spin_period": 8.0,
+    "max_spin_period": 28.0
   },
   "fleets": [
-    {"name": "Small Core Pirates",   "strength": 500},
-    {"name": "Large Core Pirates",   "strength": 1400},
-    {"name": "Large Syndicate",      "strength": 6000},
-    {"name": "Korath Large Raid",    "strength": 60000},
-    {"name": "Korath Miners",        "strength": 30000}
+    {"name": "small_core_pirates",   "strength": 500},
+    {"name": "large_core_pirates",   "strength": 1400},
+    {"name": "large_syndicate",      "strength": 6000},
+    {"name": "korath_large_raid",    "strength": 60000},
+    {"name": "korath_miners",        "strength": 30000}
   ],
   "trade": {
-    "Clothing":     364,
-    "Electronics":  664,
-    "Equipment":    601,
-    "Food":         298,
-    "Heavy Metals": 889,
-    "Industrial":   754,
-    "Luxury Goods": 962,
-    "Medical":      746,
-    "Metal":        338,
-    "Plastic":      266
+    "clothing":     364,
+    "electronics":  664,
+    "equipment":    601,
+    "food":         298,
+    "heavy_metals": 889,
+    "industrial":   754,
+    "luxury_goods": 962,
+    "medical":      746,
+    "metal":        338,
+    "plastic":      266
   },
   "minables": [
     {"resource": "iron",    "amount": 2,  "rarity": 2.87775},

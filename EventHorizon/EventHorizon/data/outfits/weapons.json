@@ -1,37 +1,70 @@
 {
     "weapons": [
     {
-        "outfit": "Heavy Laser Turret",
+        "id": "heavy_laser_turret",
+        "display_name": "Heavy Laser Turret",
         "category": "turret",
         "series": "Turrets",
         "index": 1050,
         "cost": 320000,
-        "thumbnail": "Art/outfit/heavy laser turret",
+        "thumbnail": "Art/outfit/heavy_laser_turret",
         "mass": 40,
-        "outfit space": -40,
-        "weapon capacity": -40,
-        "turret mounts": -1,
-        "required crew": 1,
+        "outfit_space": -40,
+        "weapon_capacity": -40,
+        "turret_mounts": -1,
+        "required_crew": 1,
         "weapon": {
             "sprite": {
-                "name": "Art/projectile/2x heavy laser",
-                "frame rate": 1
+                "name": "Art/projectile/2x_heavy_laser",
+                "frame_rate": 1
             },
-            "hardpoint sprite": "Art/hardpoint/heavy laser turret",
-            "hardpoint offset": 8.0,
-            "sound": "heavy laser",
-            "hit effect": "heavy laser impact",
+            "hardpoint_sprite": "Art/hardpoint/heavy_laser_turret",
+            "hardpoint_offset": 8.0,
+            "sound": "heavy_laser",
+            "hit_effect": "heavy_laser_impact",
             "inaccuracy": 0.4,
-            "turret turn": 2.2,
+            "turret_turn": 2.2,
             "velocity": 400,
             "lifetime": 1,
             "reload": 1,
-            "firing energy": 2.66,
-            "firing heat": 5.6,
-            "shield damage": 3.4,
-            "hull damage": 4.8
+            "firing_energy": 2.66,
+            "firing_heat": 5.6,
+            "shield_damage": 3.4,
+            "hull_damage": 4.8
         },
         "description": "For ships with enough space to install one, the Heavy Laser Turret is a powerful weapon, equally useful for driving off fighters and for bombarding larger targets with continuous fire without having to worry about pointing your ship in the right direction."
+    },
+    {
+        "id": "heavy_laser_gun",
+        "display_name": "Heavy Laser",
+        "category": "gun",
+        "series": "Guns",
+        "index": 1051,
+        "cost": 260000,
+        "thumbnail": "Art/outfit/heavy_laser",
+        "mass": 25,
+        "outfit_space": -28,
+        "weapon_capacity": -28,
+        "gun_ports": -1,
+        "weapon": {
+            "sprite": {
+                "name": "Art/projectile/heavy_laser",
+                "frame_rate": 1
+            },
+            "hardpoint_sprite": "Art/hardpoint/heavy_laser",
+            "hardpoint_offset": 8.0,
+            "sound": "heavy_laser",
+            "hit_effect": "heavy_laser_impact",
+            "inaccuracy": 0.0,
+            "velocity": 400,
+            "lifetime": 1,
+            "reload": 1,
+            "firing_energy": 2.0,
+            "firing_heat": 4.4,
+            "shield_damage": 3.4,
+            "hull_damage": 4.8
+        },
+        "description": "A fixed-mount variant of the Heavy Laser. Lighter and cheaper than the turreted version, but locked to the ship's forward arc — point the nose at your target."
     }
 ]
 }

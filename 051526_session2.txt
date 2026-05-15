@@ -1,0 +1,135 @@
+Current Task — User's 6-Item Request
+In progress: a UI polish pass on the shipyard + outfitter hardpoint/inventory system. Started but only (1) partially done.
+
+#	Request	Status
+1	Shipyard LOADOUT: replace underline with filled box behind row	⏳ in progress
+2	Drag between nodes should swap (not random donate)	🟡 method added, not yet wired
+3	LOADOUT filter: only turret/gun/engine categories	⏸ pending
+4	Inventory in both screens: no boxes/underlines	⏸ pending
+5	Outfitter shop column: restore selected-row highlight	⏸ pending
+6	Clip scrollable inventory containers (use SKCropNode)	⏸ pending
+What Was Done This Turn
+Added to PlayerProfile.swift:
+
+@discardableResult
+func swapMountAssignments(slot1: String, slot2: String) -> Bool { ... }
+Type-checks both sides via HardpointKind.accepts(category:), swaps the two mountAssignments entries (preserves nil for "empty"), returns false if either side would violate the type filter. Not yet called from anywhere — wire into ShipyardScene.endDrag.
+
+Concrete Resume Steps
+1 + 4 — Highlight style overhaul
+ShipyardScene.swift renderInventoryRows:
+
+Currently draws an SKShapeNode line underline for equipped rows.
+Add a highlightStyle: HighlightStyle parameter: .fillBox | .none.
+.fillBox: draw a translucent rect (kind.color, ~0.30 alpha) behind the row covering the row's full width. zPosition < label nodes so text renders on top.
+.none: no decoration.
+Call sites:
+weaponsListContainer (LOADOUT col) → .fillBox
+allListContainer (INVENTORY col) → .none
+OutfitterScene.swift renderUnifiedInventoryList:
+
+Drop the underline drawing entirely.
+Keep the blue bar that highlights highlightOutfit (shop selection).
+2 — Swap in endDrag
+ShipyardScene.swift endDrag(at:outfitID:):
+
+guard let target = targetSlot else { return }
+if let source = dragSourceSlot,
+   source != target,
+   let existing = PlayerProfile.shared.mountAssignments[target],
+   existing != outfitID {
+    _ = PlayerProfile.shared.swapMountAssignments(slot1: source, slot2: target)
+} else {
+    _ = PlayerProfile.shared.assignWeaponToMount(outfitID, slot: target)
+}
+PlayerProfile.shared.persistCurrentSave()
+tab1Container.removeFromParent()
+buildTab1()
+showTab(activeTab)
+3 — LOADOUT filter
+ShipyardScene.swift buildTab1 — column 3 filter currently:
+
+filter: { o in (o.weapon != nil) || (o.thrust != nil) || (o.turn != nil) }
+Replace with category check:
+
+filter: { o in
+    let cat = o.category?.lowercased() ?? ""
+    return cat == "turret" || cat == "turrets"
+        || cat == "gun"    || cat == "guns"
+        || cat == "thruster" || cat == "steering"
+}
+Or expose a HardpointKind.bucket(forCategory:) ∈ {turret, gun, engine} check.
+
+5 — Outfitter shop selection visual
+OutfitterScene.swift buildOutfitList:
+
+Row background is currently uniform. Bring back conditional fill:
+
+let selected = (def.id == selectedOutfitName)
+rowBg.fillColor = selected
+    ? UIColor(red: 0.10, green: 0.28, blue: 0.52, alpha: 0.85)
+    : UIColor(white: 0.06, alpha: 0.80)
+rowBg.strokeColor = selected
+    ? UIColor(red: 0.28, green: 0.60, blue: 1.0, alpha: 0.60)
+    : UIColor(white: 0.18, alpha: 0.45)
+selectOutfit already calls buildCenterPanel() + buildRightPanel() — add buildOutfitList() so the catalogue redraws with the new selection.
+
+6 — Clip scrolling with SKCropNode
+Both scenes' scroll containers (outfitter inventoryContainer, shipyard weaponsListContainer + allListContainer) should be children of an SKCropNode whose mask is a rect matching the column bounds.
+
+Pattern:
+
+let crop = SKCropNode()
+let mask = SKSpriteNode(color: .white,
+                        size: CGSize(width: colWidth, height: viewportHeight))
+mask.anchorPoint = CGPoint(x: 0, y: 1)   // top-left
+mask.position    = CGPoint(x: originX, y: listTop)
+crop.maskNode    = mask
+crop.addChild(scrollContainer)
+parentContainer.addChild(crop)
+Verify touch hit-testing for the icons inside still works — parent.convert(_:from:) in touchesBegan should be unaffected since SKCropNode preserves the hierarchy.
+
+Project Architecture Quick Reference
+Working dir: /Users/master/EventHorizon/EventHorizon
+Bundle ID: afkupuz.EventHorizon
+Simulator: iPhone 17 Pro EC9C2B8B-6331-4566-8D34-3C85A0B357B6 (iOS 26.5)
+Build cmd:
+
+xcodebuild -project EventHorizon.xcodeproj -scheme EventHorizon \
+  -destination 'platform=iOS Simulator,id=EC9C2B8B-6331-4566-8D34-3C85A0B357B6' \
+  -derivedDataPath /tmp/eh-build build
+Install: xcrun simctl install <udid> /tmp/eh-build/Build/Products/Debug-iphonesimulator/EventHorizon.app
+
+Key files for this task:
+
+EventHorizon/EventHorizon/HardpointKind.swift — type enum + colors
+EventHorizon/EventHorizon/PlayerProfile.swift — mountAssignments, assignWeaponToMount, swapMountAssignments, autoSeedMountAssignments
+EventHorizon/EventHorizon/ShipyardScene.swift — MY SHIP tab: buildTab1, installHardpointMarker, renderInventoryRows, endDrag
+EventHorizon/EventHorizon/OutfitterScene.swift — buildOutfitList, buildRightPanel, renderUnifiedInventoryList, selectOutfit
+EventHorizon/EventHorizon/ShipNode.swift — engine emitters (now driven by mountAssignments["engine_<i>"])
+EventHorizon/EventHorizon/data/ships/ringship.json — has unified turrets[], guns[], engines[] arrays, each entry {x,y,weapon} or {x,y,engine}
+Model Invariants (Don't Break)
+mountAssignments is authoritative for what's at each mount. ShipDef.turrets[i].weapon is only used by autoSeedMountAssignments() on ship-equip.
+Slot keys: "turret_<i>" / "gun_<i>" / "engine_<i>" matching the JSON array index.
+Type filter (HardpointKind.accepts):
+turret slot ↔ category turret/turrets
+gun slot ↔ category gun/guns
+engine slot ↔ category thruster/steering/engine/engines
+Thrust/turn count only from mounted engines (PlayerProfile.totalEngineThrust iterates mountAssignments not installedOutfits).
+Engine emitters in ShipNode.installEngineEmitters use mountAssignments["engine_<i>"], not installedOutfits.
+Beam routing in GameScene.tickBeamWeapon consults mountAssignments[slot] only; no JSON default fallback.
+Save file format uses explicit CodingKeys (snake_case) — no keyEncodingStrategy (would mangle dict keys like installed_outfits entries).
+Legacy save migration: PlayerProfile.loadFromSave rewrites human-name keys ("Heavy Laser Turret") to snake_case IDs, then auto-seeds mount assignments if the save's mount_assignments is empty.
+Recent Architectural Decisions
+Joystick uses InputState.targetHeading: Float? (absolute world bearing). OfflineSim slews via min(turnRate*dt, |diff|) — no overshoot possible regardless of turn speed.
+Heat scale: maxHeat = mass × 60, dissipation rate = mass × heat_dissipation/sec. ES convention.
+Thrust acceleration: accel = totalThrust × 4000 / totalMass. TURN_TO_RADPS = 50.
+Beam classifier: weapon.reload >= 1.0 ⇒ beam (continuous instant-hit). Else projectile firing every reload seconds, per-shot damage = stat × reload.
+Asteroid colliders are alpha-traced from the baked texture; the parent body rotates (not the sprite) so collider stays aligned with the visible mesh.
+Beam targeting rules: asteroid must be selectedBody; hostile-faction ships (none yet) are auto-hit; player's own ship and planets/suns are skipped (no physics body on planets/suns).
+Damage routing: weapon's per-second stats × dt for beams; × reload for per-shot projectiles. Goes through OfflineSim.applyDamage.
+Known Loose Ends (Not in This Turn's Scope)
+Multiplayer mount sync — current model assumes single-player; remote ships' loadouts are unknown so they render every declared engine slot.
+No "explicitly empty" sentinel — clearing a mount removes the key from mountAssignments. Works because we no longer fall back to JSON defaults.
+The dragSourceSlot field is captured when starting a drag from a marker, but endDrag doesn't yet use it (will when item 2 is wired).
+Many outfits in ship JSONs reference IDs not in OutfitRegistry (sidewinder, torpedo, hyperdrive, etc.) — they appear in inventory but can't be dragged. This is fine.

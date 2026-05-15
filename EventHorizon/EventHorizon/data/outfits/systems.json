@@ -1,0 +1,35 @@
+{
+    "systems": [
+        {
+            "id": "plasma_core",
+            "display_name": "Plasma Core",
+            "category": "power",
+            "series": "Power",
+            "index": 2010,
+            "cost": 180000,
+            "thumbnail": "Art/outfit/plasma_core",
+            "mass": 80,
+            "outfit_space": -80,
+            "energy_capacity": 1000,
+            "energy_recharge": 10,
+            "heat_generation": 2,
+            "description": "A fusion reactor that doubles as a stable plasma capacitor. Trickles out a steady supply of power while warming itself by a couple of points per second."
+        },
+        {
+            "id": "shield_generator",
+            "display_name": "Shield Generator",
+            "category": "shield",
+            "series": "Shields",
+            "index": 2110,
+            "cost": 95000,
+            "thumbnail": "Art/outfit/shield_generator",
+            "mass": 40,
+            "outfit_space": -40,
+            "shield_capacity": 100,
+            "shield_recharge": 1,
+            "energy_consumption": 5,
+            "heat_generation": 1,
+            "description": "Bolts onto the hull and projects a small but persistent shield envelope. Hungrier than its size suggests — it draws power continuously."
+        }
+    ]
+}

@@ -29,7 +29,10 @@ struct SolarSystemConfig: Decodable {
         }
         do {
             let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(SolarSystemConfig.self, from: data)
+            let decoder = JSONDecoder()
+            // JSON uses snake_case keys; Swift properties stay camelCase.
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(SolarSystemConfig.self, from: data)
         } catch {
             print("[SolarSystemConfig] failed to decode \(name).json: \(error)")
             return nil
