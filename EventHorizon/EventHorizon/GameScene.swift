@@ -1507,14 +1507,16 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
                             ship: ShipNode,
                             dt: TimeInterval,
                             firing: Bool) {
-        let origin = mountWorldPosition(mount: mount, ship: ship)
+        let mountWorld = mountWorldPosition(mount: mount, ship: ship)
 
         // ── Determine where the turret WANTS to aim ────────────────────
         let targetAngle: CGFloat
         if isTurret, let target = selectedBody, target.kind == .asteroid {
-            // Bearing from the mount to the target's centre.
-            let dx = target.position.x - origin.x
-            let dy = target.position.y - origin.y
+            // Bearing from the swivel to the target's centre (the small
+            // barrel offset isn't worth correcting for in the aim
+            // solution — engagement ranges are hundreds of units).
+            let dx = target.position.x - mountWorld.x
+            let dy = target.position.y - mountWorld.y
             targetAngle = atan2(dy, dx)
         } else {
             // No target (or non-turret weapon) → align with ship heading.
@@ -1540,6 +1542,11 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         if isTurret {
             ship.setTurretAim(slot: slot, worldAngle: aim)
         }
+
+        // Beam fires from the barrel muzzle, not the swivel centre.
+        let barrelLen = isTurret ? ship.turretBarrelLength(slot: slot) : 0
+        let origin = CGPoint(x: mountWorld.x + cos(aim) * barrelLen,
+                             y: mountWorld.y + sin(aim) * barrelLen)
 
         // ── Beam visuals + damage only while actively firing ───────────
         guard firing else {

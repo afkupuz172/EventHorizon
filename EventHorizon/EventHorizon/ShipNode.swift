@@ -426,6 +426,12 @@ final class ShipNode: SKNode {
                   let tex = HardpointSpriteAssets.texture(forID: oid)
             else { continue }
             let sprite       = SKSpriteNode(texture: tex)
+            // 50% of native pixel size — the raw art reads as bulky
+            // mounted on the 110-px ringship; halving sits the turret
+            // proportionally on the hull.
+            let native       = tex.size()
+            sprite.size      = CGSize(width: native.width * 0.5,
+                                      height: native.height * 0.5)
             sprite.zPosition = 1   // above hull, below beams (which sit at 4)
             addChild(sprite)
             turretSprites.append(TurretSpriteEntry(
@@ -448,6 +454,18 @@ final class ShipNode: SKNode {
         // (0 = +x) to sprite zRotation (0 = +y) by subtracting π/2.
         entry.sprite.zRotation = worldAngle - .pi / 2
         entry.hasExternalAim   = true
+    }
+
+    /// Distance from a turret's swivel mount to its muzzle, in scene
+    /// units. GameScene offsets the beam start by this much along the
+    /// current aim so the bolt appears to leave the barrel tip instead
+    /// of the centre of the hardpoint. Sprite anchor is centered and
+    /// the barrel extends to the texture's +y edge, so the tip sits
+    /// half the sprite height from the mount.
+    func turretBarrelLength(slot: String) -> CGFloat {
+        guard let entry = turretSprites.first(where: { $0.slot == slot })
+        else { return 0 }
+        return entry.sprite.size.height / 2
     }
 
     /// Inspects the JSON `engines` array and creates a thrust emitter at
