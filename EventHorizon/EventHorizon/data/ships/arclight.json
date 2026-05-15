@@ -26,26 +26,20 @@
     }
   },
   "outfits": [
-    { "name": "energy_blaster",         "count": 2 },
-    { "name": "javelin_mini_pod",       "count": 2 },
-    { "name": "javelin",                "count": 60 },
-    { "name": "ngvf_cc_fuel_cell",      "count": 1 },
-    { "name": "lp072a_battery_pack",    "count": 1 },
-    { "name": "d23_qp_shield_generator","count": 1 },
-    { "name": "x2700_ion_thruster",     "count": 1 },
-    { "name": "x3200_ion_steering",     "count": 1 },
-    { "name": "hyperdrive",             "count": 1 }
+    { "name": "heavy_laser_gun",  "count": 2 },
+    { "name": "plasma_thruster",  "count": 1 },
+    { "name": "plasma_steering",  "count": 1 },
+    { "name": "plasma_core",      "count": 1 },
+    { "name": "shield_generator", "count": 1 }
   ],
   "turrets": [],
   "guns": [
-    { "x": -20, "y": 12, "weapon": "energy_blaster" },
-    { "x":  20, "y": 12, "weapon": "energy_blaster" },
-    { "x": -44, "y": 10, "weapon": "javelin_mini_pod" },
-    { "x":  44, "y": 10, "weapon": "javelin_mini_pod" }
+    { "x": -10, "y": 32, "weapon": "heavy_laser_gun" },
+    { "x":  10, "y": 32, "weapon": "heavy_laser_gun" }
   ],
   "engines": [
-    { "x": -10, "y": -45, "engine": "x2700_ion_thruster" },
-    { "x":  10, "y": -45, "engine": "x2700_ion_thruster" }
+    { "x": -6, "y": -42, "engine": "plasma_thruster" },
+    { "x":  6, "y": -42, "engine": "plasma_steering" }
   ],
   "leaks": [
     { "type": "leak",  "count": 60, "frequency": 50 },

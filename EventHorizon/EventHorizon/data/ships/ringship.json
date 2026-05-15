@@ -31,46 +31,27 @@
     }
   },
   "outfits": [
-    { "name": "sidewinder_missile_launcher", "count": 2 },
-    { "name": "sidewinder_missile",          "count": 90 },
-    { "name": "torpedo_launcher",            "count": 1 },
-    { "name": "torpedo",                     "count": 30 },
-    { "name": "heavy_laser_turret",          "count": 4 },
-    { "name": "heavy_laser_gun",             "count": 2 },
-    { "name": "heavy_anti_missile_turret",   "count": 2 },
-    { "name": "fusion_reactor",              "count": 1 },
-    { "name": "lp144a_battery_pack",         "count": 1 },
-    { "name": "d94_yv_shield_generator",     "count": 1 },
-    { "name": "large_radar_jammer",          "count": 1 },
-    { "name": "ramscoop",                    "count": 1 },
-    { "name": "laser_rifle",                 "count": 15 },
-    { "name": "x4700_ion_thruster",          "count": 1 },
-    { "name": "x5200_ion_steering",          "count": 1 },
-    { "name": "hyperdrive",                  "count": 1 }
+    { "name": "heavy_laser_turret", "count": 4 },
+    { "name": "heavy_laser_gun",    "count": 2 },
+    { "name": "plasma_thruster",    "count": 2 },
+    { "name": "plasma_steering",    "count": 1 },
+    { "name": "plasma_core",        "count": 1 },
+    { "name": "shield_generator",   "count": 1 }
   ],
   "turrets": [
     { "x": -32, "y":  22, "weapon": "heavy_laser_turret" },
     { "x":  32, "y":  22, "weapon": "heavy_laser_turret" },
     { "x": -18, "y": -22, "weapon": "heavy_laser_turret" },
-    { "x":  18, "y": -22, "weapon": "heavy_laser_turret" },
-    { "x": -28, "y":   0, "weapon": "heavy_anti_missile_turret" },
-    { "x":  28, "y":   0, "weapon": "heavy_anti_missile_turret" }
+    { "x":  18, "y": -22, "weapon": "heavy_laser_turret" }
   ],
   "guns": [
     { "x":  -8, "y":  30, "weapon": "heavy_laser_gun" },
-    { "x":   8, "y":  30, "weapon": "heavy_laser_gun" },
-    { "x": -12, "y":  36, "weapon": "torpedo_launcher" },
-    { "x":  12, "y":  36, "weapon": "sidewinder_missile_launcher" },
-    { "x": -16, "y":  32, "weapon": "sidewinder_missile_launcher" }
+    { "x":   8, "y":  30, "weapon": "heavy_laser_gun" }
   ],
   "engines": [
-    { "x":  -8, "y": -42, "engine": "plasma_thruster" },
-    { "x":   8, "y": -42, "engine": "plasma_thruster" }
-  ],
-  "bays": [
-    { "type": "fighter", "x": -43.5, "y": -125,   "launch_effect": "human_internal" },
-    { "type": "fighter", "x":  53,   "y":  -72.5, "launch_effect": "human_internal" },
-    { "type": "fighter", "x": -50,   "y":  103.5, "launch_effect": "human_internal" }
+    { "x": -12, "y": -42, "engine": "plasma_thruster" },
+    { "x":   0, "y": -38, "engine": "plasma_steering" },
+    { "x":  12, "y": -42, "engine": "plasma_thruster" }
   ],
   "leaks": [
     { "type": "leak",     "count": 30, "frequency": 50 },

@@ -790,8 +790,13 @@ final class ShipyardScene: SKScene {
         guard let touch = touches.first else { return }
         let pt = touch.location(in: self)
 
-        // BUY buttons, tab buttons, and BACK take priority.
-        for (node, action) in buttons where node.contains(pt) {
+        // BUY buttons, tab buttons, and BACK take priority. Skip taps
+        // that land on a node whose ancestor tab is hidden — otherwise
+        // BUY buttons in the FOR SALE tab stay clickable through the MY
+        // SHIP tab (the buttons are visually hidden but `node.contains`
+        // doesn't care about ancestor visibility).
+        for (node, action) in buttons
+            where node.contains(pt) && isVisibleInTree(node) {
             flash(node)
             action()
             return
@@ -838,7 +843,8 @@ final class ShipyardScene: SKScene {
         }
 
         // Row background — ship selection on tab 2.
-        for (bg, sid) in shipRowBgs where bg.contains(pt) {
+        for (bg, sid) in shipRowBgs
+            where bg.contains(pt) && isVisibleInTree(bg) {
             selectShip(id: sid)
             return
         }
@@ -996,6 +1002,19 @@ final class ShipyardScene: SKScene {
         dragGhost      = nil
         dragOutfitID   = nil
         dragSourceSlot = nil
+    }
+
+    /// `node.isHidden` only reports the node's own flag — a tap on a
+    /// visually hidden BUY button still hits it because its parent tab
+    /// container is the one with `isHidden = true`. Walks the parent
+    /// chain so the inactive tab's controls are truly inert.
+    private func isVisibleInTree(_ node: SKNode) -> Bool {
+        var current: SKNode? = node
+        while let n = current {
+            if n.isHidden { return false }
+            current = n.parent
+        }
+        return true
     }
 
     private func flash(_ node: SKShapeNode) {
