@@ -33,6 +33,11 @@ final class ShipNode: SKNode {
     }
     private var turretSprites: [TurretSpriteEntry] = []
 
+    /// Selection bracket — a brief corner frame drawn around the hull
+    /// when the player taps the ship. Attached as a child so it follows
+    /// position but stays world-aligned (not rotated by hull yaw).
+    private weak var selectionBracket: SKShapeNode?
+
     // SCN nodes whose Euler angles we tweak each frame.
     private weak var headingNode: SCNNode?   // yaw   — rotates around scene +Z
     private weak var leanNode:    SCNNode?   // roll  — rotates around scene +Y (nose axis)
@@ -456,6 +461,44 @@ final class ShipNode: SKNode {
         entry.hasExternalAim   = true
     }
 
+    /// Player target indicator. Idempotent and safe to call repeatedly.
+    /// Bracket frames the ship's viewport square so the corners read
+    /// regardless of hull silhouette.
+    func setSelected(_ selected: Bool) {
+        selectionBracket?.removeFromParent()
+        selectionBracket = nil
+        guard selected else { return }
+        let size      = max(metadata.viewportSize.width,
+                            metadata.viewportSize.height) * 0.85
+        let cornerLen = max(6, size * 0.18)
+        let half      = size / 2
+        let path      = CGMutablePath()
+        // top-left
+        path.move(to:    CGPoint(x: -half + cornerLen, y:  half))
+        path.addLine(to: CGPoint(x: -half,             y:  half))
+        path.addLine(to: CGPoint(x: -half,             y:  half - cornerLen))
+        // top-right
+        path.move(to:    CGPoint(x:  half - cornerLen, y:  half))
+        path.addLine(to: CGPoint(x:  half,             y:  half))
+        path.addLine(to: CGPoint(x:  half,             y:  half - cornerLen))
+        // bottom-right
+        path.move(to:    CGPoint(x:  half - cornerLen, y: -half))
+        path.addLine(to: CGPoint(x:  half,             y: -half))
+        path.addLine(to: CGPoint(x:  half,             y: -half + cornerLen))
+        // bottom-left
+        path.move(to:    CGPoint(x: -half + cornerLen, y: -half))
+        path.addLine(to: CGPoint(x: -half,             y: -half))
+        path.addLine(to: CGPoint(x: -half,             y: -half + cornerLen))
+        let shape         = SKShapeNode(path: path)
+        shape.strokeColor = UIColor(red: 1.0, green: 0.85, blue: 0.30, alpha: 0.95)
+        shape.fillColor   = .clear
+        shape.lineWidth   = 1.5
+        shape.lineCap     = .round
+        shape.zPosition   = 50
+        addChild(shape)
+        selectionBracket = shape
+    }
+
     /// Distance from a turret's swivel mount to its muzzle, in scene
     /// units. GameScene offsets the beam start by this much along the
     /// current aim so the bolt appears to leave the barrel tip instead
@@ -559,6 +602,14 @@ final class ShipNode: SKNode {
 
         alpha    = ship.dead ? 0 : 1
         isHidden = false
+        // NPC rise/land: snapshot.scale (0..1) drives the whole
+        // ShipNode's scale. Engine plumes and turret sprites shrink with
+        // it because they're descendants.
+        if let s = ship.scale {
+            setScale(CGFloat(max(0, min(1, s))))
+        } else if xScale != 1 {
+            setScale(1)
+        }
     }
 
     /// Recompute the sun direction in the sprite's texture frame and push it

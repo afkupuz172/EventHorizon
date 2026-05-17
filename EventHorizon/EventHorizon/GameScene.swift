@@ -5,8 +5,12 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
     // ── Mode ───────────────────────────────────────────────────────────────────
     private let mode: GameMode
     private var offlineSim: OfflineSim?
+    private var npcManager: NPCManager?
     private var lastSimTime: TimeInterval = 0
     private let simInterval: TimeInterval = 1.0 / 20.0   // match server tick rate
+    /// Set true while the game-over scene is being presented so the
+    /// snapshot loop stops feeding the dead player back into the world.
+    private var isGameOver: Bool = false
 
     // ── Camera & world layers ──────────────────────────────────────────────────
     private let cameraNode         = SKCameraNode()
@@ -103,6 +107,10 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
     private var miniMap:        MiniMap!
     private var infoTooltip:    InfoTooltip!
     private weak var selectedBody: CelestialBodyNode?
+    /// Mutually exclusive with `selectedBody` — selecting either clears
+    /// the other. Beam/projectile target gates accept the selected ship
+    /// as a valid hit even when the ship's faction is neutral.
+    private weak var selectedShip: ShipNode?
 
     // ── Docking state ──────────────────────────────────────────────────────────
     /// True while the dock animation is playing. While set, snapshots aren't
@@ -293,6 +301,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
                                     passiveHeatGen:       passiveHeat)
             offlineSim   = sim
             mySessionId  = sim.sessionId
+            setupNPCs()
         case .multiplayer:
             NetworkManager.shared.delegate = self
             NetworkManager.shared.connect()
@@ -526,6 +535,22 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
                            planets: system.planetPositions)
     }
 
+    /// Constructed AFTER the offline sim hands us a session id — single
+    /// player only. Called from `didMove` once `mySessionId` is set;
+    /// `setupSolarSystem` runs earlier (during `prepareScene`) when the
+    /// sim doesn't exist yet, so the wiring can't live there.
+    private func setupNPCs() {
+        guard npcManager == nil,
+              mode == .singlePlayer,
+              let system = solarSystem,
+              let cfg = SolarSystemConfig.load(name: systemName),
+              let sid = mySessionId
+        else { return }
+        npcManager = NPCManager(systemConfig: cfg,
+                                solarSystem: system,
+                                playerSessionId: sid)
+    }
+
     private func setupHUD() {
         let hw = size.width  / 2
         let hh = size.height / 2
@@ -712,14 +737,40 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         // Offline sim drives the same delegate path as the network. Pause
         // while docking so the player's ship doesn't drift mid-animation.
-        if mode == .singlePlayer, !isDocking, let sim = offlineSim {
+        if mode == .singlePlayer, !isDocking, !isGameOver, let sim = offlineSim {
             if currentTime - lastSimTime >= simInterval {
+                let dt = currentTime - lastSimTime
                 lastSimTime = currentTime
                 let (wname, weapon) = currentPlayerWeapon()
-                let snap = sim.step(input: localInput,
-                                    weaponName: wname,
-                                    weapon: weapon)
-                applySnapshot(snap, mySessionId: sim.sessionId)
+                let playerSnap = sim.step(input: localInput,
+                                          weaponName: wname,
+                                          weapon: weapon)
+                // Tick NPCs after the player so their AI sees the
+                // latest player position. The two snapshots get merged
+                // into one before reaching applySnapshot.
+                let merged: GameSnapshot
+                if let mgr = npcManager,
+                   let playerShip = playerSnap.ships[sim.sessionId] {
+                    let playerPos = CGPoint(x: CGFloat(playerShip.x),
+                                            y: CGFloat(playerShip.y))
+                    let result = mgr.step(
+                        dt: dt, now: currentTime,
+                        playerPosition: playerPos,
+                        playerFaction: "player",
+                        playerReputation: PlayerProfile.shared.reputation)
+                    var ships = playerSnap.ships
+                    for (k, v) in result.ships { ships[k] = v }
+                    var projs = playerSnap.projectiles
+                    for (k, v) in result.projectiles { projs[k] = v }
+                    merged = GameSnapshot(tick: playerSnap.tick,
+                                          ships: ships,
+                                          projectiles: projs)
+                    drainNPCDestructions(mgr.recentDestructions)
+                } else {
+                    merged = playerSnap
+                }
+                applySnapshot(merged, mySessionId: sim.sessionId)
+                checkGameOver(snapshot: merged, mySessionId: sim.sessionId)
             }
         }
 
@@ -791,7 +842,8 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
                        suns:           system.sunPositions,
                        planets:        system.planetPositions,
                        ships:          otherShips,
-                       selection:      selectedBody?.position)
+                       selection:      selectedShip?.position
+                                    ?? selectedBody?.position)
 
         // Keep the tooltip's distance value in sync as the player flies, and
         // gate the Dock button on the close-and-slow conditions.
@@ -825,9 +877,14 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
             }
 
             // Tap-to-select takes priority. If the touch lands on a selectable
-            // body, consume the touch — don't route it to the joystick or fire
-            // button.
+            // body or ship, consume the touch — don't route it to the joystick
+            // or fire button. Ships beat bodies when stacked, since the player
+            // is usually trying to target the moving thing.
             let scenePoint = touch.location(in: self)
+            if let ship = selectableShip(at: scenePoint) {
+                selectShip(ship)
+                continue
+            }
             if let body = selectableBody(at: scenePoint) {
                 selectBody(body)
                 continue
@@ -854,6 +911,30 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
     /// is in scene coordinates, which match world coordinates because the
     /// camera is the scene's `camera`. The local-objects layer is unparented
     /// from any parallax offset, so a body's `position` IS its world position.
+    /// Closest selectable ship to `scenePoint`, or nil if none within
+    /// the generous hit radius. Excludes the local player — you can't
+    /// target yourself.
+    private func selectableShip(at scenePoint: CGPoint) -> ShipNode? {
+        var best: (node: ShipNode, dist: CGFloat)?
+        for (id, node) in shipNodes where id != mySessionId {
+            // While a ship is mid rise/landing it shrinks toward zero —
+            // skip it so tiny/invisible NPCs aren't accidentally tapped.
+            if node.xScale < 0.3 { continue }
+            let dx = scenePoint.x - node.position.x
+            let dy = scenePoint.y - node.position.y
+            let dist = hypot(dx, dy)
+            // Half the ship's larger viewport dimension, with a floor so
+            // tiny silhouettes are still tappable.
+            let hitRadius = max(node.metadata.viewportSize.width,
+                                node.metadata.viewportSize.height) / 2 + 8
+            guard dist <= max(hitRadius, 28) else { continue }
+            if best == nil || dist < best!.dist {
+                best = (node, dist)
+            }
+        }
+        return best?.node
+    }
+
     private func selectableBody(at scenePoint: CGPoint) -> CelestialBodyNode? {
         guard let bodies = solarSystem?.bodies else { return nil }
         var best: (body: CelestialBodyNode, dist: CGFloat)?
@@ -941,6 +1022,24 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         node.run(.sequence([rise, clear]))
     }
 
+    /// Mirrors `selectBody` for ship targets. Tap toggles deselect; tap
+    /// a different ship swaps; any active body selection is cleared.
+    /// Beams + projectiles use the selected ship as a valid hit even
+    /// when the ship is neutral (the player has explicitly opted in).
+    private func selectShip(_ ship: ShipNode) {
+        if selectedShip === ship {
+            selectedShip?.setSelected(false)
+            selectedShip = nil
+            return
+        }
+        selectedBody?.setSelected(false)
+        selectedBody = nil
+        infoTooltip.hide()
+        selectedShip?.setSelected(false)
+        ship.setSelected(true)
+        selectedShip = ship
+    }
+
     private func selectBody(_ body: CelestialBodyNode) {
         // Tapping the same body again deselects, otherwise switch selection.
         if selectedBody === body {
@@ -949,6 +1048,9 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
             infoTooltip.hide()
             return
         }
+        // Clear any ship target — selection is mutually exclusive.
+        selectedShip?.setSelected(false)
+        selectedShip = nil
         selectedBody?.setSelected(false)
         body.setSelected(true)
         selectedBody = body
@@ -1099,7 +1201,8 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
                 node.update(from: data, sunPosition: primarySunPosition)
                 if id == mySessionId { captureLocalBaseline(from: data) }
             } else {
-                let node = ShipNode(isLocalPlayer: id == mySessionId)
+                let metadata: ShipMetadata? = data.shipID.flatMap { ShipMetadata.byID[$0] }
+                let node = ShipNode(isLocalPlayer: id == mySessionId, metadata: metadata)
                 addChild(node)
                 shipNodes[id] = node
                 node.update(from: data, sunPosition: primarySunPosition)
@@ -1220,27 +1323,32 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         let fromPlayer = projectile.ownerId == (mySessionId ?? "")
         if fromPlayer {
             let target = shipNodes.first(where: { $0.value === ship })?.key
-            let isHostile = isHostileShip(sessionId: target)
-            let isSelected = false  // ships aren't selectable yet in this codebase
+            let isHostile  = isHostileShip(sessionId: target)
+            let isSelected = selectedShip === ship
             if !isHostile && !isSelected { return }
         }
 
-        // Local player damage flows back into OfflineSim so shields/hull are
-        // authoritative. Other ships will get the same treatment once
-        // NPC/server damage state lands. Damage stats in JSON are *per
-        // second*; for a discrete projectile we multiply by the weapon's
-        // reload (= seconds between shots) so total DPS is constant.
+        // Damage routes to whichever simulator owns the hit ship.
+        // OfflineSim for the local player, NPCManager for AI ships.
+        let targetSid = shipNodes.first(where: { $0.value === ship })?.key
+        let reload = Float(max(weapon?.reload ?? 1, 0.001))
+        let shieldDmg = Float(weapon?.shieldDamage ?? 1) * reload
+        let hullDmg   = Float(weapon?.hullDamage   ?? 1) * reload
         if let sid = mySessionId, ship === shipNodes[sid], let sim = offlineSim {
             let dx = Float(ship.position.x - projectile.position.x)
             let dy = Float(ship.position.y - projectile.position.y)
             let len = max(0.001, sqrt(dx * dx + dy * dy))
-            let reload = Float(max(weapon?.reload ?? 1, 0.001))
             sim.applyDamage(
-                shieldDamage: Float(weapon?.shieldDamage ?? 1) * reload,
-                hullDamage:   Float(weapon?.hullDamage   ?? 1) * reload,
-                force:        Float(weapon?.hitForce     ?? 1),
-                direction:    (dx / len, dy / len)
+                shieldDamage: shieldDmg, hullDamage: hullDmg,
+                force: Float(weapon?.hitForce ?? 1),
+                direction: (dx / len, dy / len)
             )
+        } else if let mgr = npcManager,
+                  let sid = targetSid, mgr.isNPC(sid) {
+            mgr.applyDamage(toSessionId: sid,
+                            shieldDamage: shieldDmg,
+                            hullDamage:   hullDmg,
+                            ownerId:      projectile.ownerId)
         }
 
         spawnHitFlash(at: projectile.position)
@@ -1291,6 +1399,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
     private func consumeProjectile(_ proj: ProjectileNode, withExplosion: Bool) {
         offlineSim?.markProjectileConsumed(proj.projectileID)
+        npcManager?.markProjectileConsumed(proj.projectileID)
         proj.removeFromParent()
         projectileNodes.removeValue(forKey: proj.projectileID)
     }
@@ -1332,14 +1441,60 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         }
     }
 
-    /// Returns true if `sessionId` corresponds to a ship whose `faction`
-    /// is in `PlayerProfile.hostileFactions`. Asteroids never count as
-    /// ships here.
+    /// Resolved at fire-time from the NPC's faction stance toward the
+    /// player, biased by the player's current reputation with that
+    /// faction (see `FactionRegistry.stance`). The local player itself
+    /// is never hostile to themselves.
     private func isHostileShip(sessionId: String?) -> Bool {
-        // No NPC/peer faction wiring yet — placeholder for when ship
-        // snapshots start carrying a faction string. The local player ship
-        // never returns true here.
-        return false
+        guard let sid = sessionId, sid != mySessionId else { return false }
+        guard let mgr = npcManager, let faction = mgr.faction(of: sid)
+        else { return false }
+        let rep = PlayerProfile.shared.reputation[faction] ?? 0
+        return FactionRegistry.shared.stance(
+            of: faction, toward: "player", playerReputation: rep) == "hostile"
+    }
+
+    // MARK: – NPC destruction + game over
+
+    /// Drain any NPC explosions produced by the last NPC tick: visual
+    /// burst, sound (TBD), and reputation deltas if the player is the
+    /// dominant attacker.
+    private func drainNPCDestructions(_ events: [NPCManager.Destruction]) {
+        for d in events {
+            spawnBurst(at: d.position, color: .orange, radius: 28)
+            guard d.killerOwnerId == mySessionId,
+                  let def = FactionRegistry.shared.faction(id: d.faction),
+                  let deltas = def.repDeltaOnKill
+            else { continue }
+            for (faction, delta) in deltas {
+                PlayerProfile.shared.reputation[faction, default: 0] += delta
+            }
+            PlayerProfile.shared.persistCurrentSave()
+        }
+    }
+
+    /// Push the player into the Game Over scene once the offline sim
+    /// reports hull <= 0. Guarded so the snapshot loop only fires the
+    /// transition once.
+    private func checkGameOver(snapshot: GameSnapshot, mySessionId: String) {
+        guard !isGameOver,
+              let me = snapshot.ships[mySessionId],
+              me.hull <= 0
+        else { return }
+        isGameOver = true
+        spawnBurst(at: CGPoint(x: CGFloat(me.x), y: CGFloat(me.y)),
+                   color: .orange, radius: 60)
+        run(.sequence([
+            .wait(forDuration: 1.0),
+            .run { [weak self] in self?.presentGameOver() }
+        ]))
+    }
+
+    private func presentGameOver() {
+        guard let view = view else { return }
+        let scene = GameOverScene(size: size)
+        scene.scaleMode = .resizeFill
+        view.presentScene(scene, transition: .fade(withDuration: 0.6))
     }
 
     // MARK: – Beam weapons (turret-tracking)
@@ -1511,12 +1666,17 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         // ── Determine where the turret WANTS to aim ────────────────────
         let targetAngle: CGFloat
-        if isTurret, let target = selectedBody, target.kind == .asteroid {
-            // Bearing from the swivel to the target's centre (the small
-            // barrel offset isn't worth correcting for in the aim
-            // solution — engagement ranges are hundreds of units).
-            let dx = target.position.x - mountWorld.x
-            let dy = target.position.y - mountWorld.y
+        let targetWorld: CGPoint?
+        if isTurret, let s = selectedShip {
+            targetWorld = s.position
+        } else if isTurret, let b = selectedBody, b.kind == .asteroid {
+            targetWorld = b.position
+        } else {
+            targetWorld = nil
+        }
+        if let tw = targetWorld {
+            let dx = tw.x - mountWorld.x
+            let dy = tw.y - mountWorld.y
             targetAngle = atan2(dy, dx)
         } else {
             // No target (or non-turret weapon) → align with ship heading.
@@ -1585,6 +1745,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
             if let s = node as? ShipNode {
                 let id = self.shipNodes.first(where: { $0.value === s })?.key
                 isValid = self.isHostileShip(sessionId: id)
+                       || self.selectedShip === s
             } else if let cb = node as? CelestialBodyNode, cb.kind == .asteroid {
                 isValid = self.selectedBody === cb
             } else {

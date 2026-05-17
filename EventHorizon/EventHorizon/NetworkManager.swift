@@ -23,6 +23,34 @@ struct ShipSnapshot {
     let maxHeat:    Float
     let thrusting: Bool
     let dead: Bool
+    /// NPC-only fields — nil for the local player ship. `shipID` lets
+    /// the renderer pick a `ShipMetadata` instead of falling back to
+    /// the ringship default; `faction` drives hostility checks;
+    /// `scale` (0..1) animates rise-from-planet and landing.
+    let shipID:   String?
+    let faction:  String?
+    let scale:    Float?
+    let disabled: Bool?
+
+    init(x: Float, y: Float, angle: Float,
+         velX: Float, velY: Float,
+         shields: Float, maxShields: Float,
+         hull: Float, maxHull: Float,
+         energy: Float, maxEnergy: Float,
+         heat: Float, maxHeat: Float,
+         thrusting: Bool, dead: Bool,
+         shipID: String? = nil, faction: String? = nil,
+         scale: Float? = nil, disabled: Bool? = nil) {
+        self.x = x; self.y = y; self.angle = angle
+        self.velX = velX; self.velY = velY
+        self.shields = shields; self.maxShields = maxShields
+        self.hull = hull; self.maxHull = maxHull
+        self.energy = energy; self.maxEnergy = maxEnergy
+        self.heat = heat; self.maxHeat = maxHeat
+        self.thrusting = thrusting; self.dead = dead
+        self.shipID = shipID; self.faction = faction
+        self.scale = scale; self.disabled = disabled
+    }
 }
 
 struct ProjectileSnapshot {

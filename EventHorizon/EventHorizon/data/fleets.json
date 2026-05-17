@@ -1,0 +1,45 @@
+{
+  "fleets": [
+    {
+      "id": "pirate_strike",
+      "faction": "pirate",
+      "default_source": "edge",
+      "ships": [
+        { "ship": "arclight", "personality": "aggressive", "weight": 0.7 },
+        { "ship": "arclight", "personality": "coward",     "weight": 0.3 }
+      ],
+      "min_count": 1,
+      "max_count": 3
+    },
+    {
+      "id": "civilian_traders",
+      "faction": "civilian",
+      "default_source": "planet",
+      "ships": [
+        { "ship": "ringship", "personality": "civilian", "weight": 1.0 }
+      ],
+      "min_count": 1,
+      "max_count": 2
+    },
+    {
+      "id": "militia_patrol",
+      "faction": "militia",
+      "default_source": "planet",
+      "ships": [
+        { "ship": "ringship", "personality": "defender", "weight": 1.0 }
+      ],
+      "min_count": 1,
+      "max_count": 2
+    },
+    {
+      "id": "lone_ringship",
+      "faction": "civilian",
+      "default_source": "planet",
+      "ships": [
+        { "ship": "ringship", "personality": "civilian", "weight": 1.0 }
+      ],
+      "min_count": 1,
+      "max_count": 1
+    }
+  ]
+}

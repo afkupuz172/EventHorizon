@@ -1,0 +1,40 @@
+{
+  "personalities": [
+    {
+      "id": "aggressive",
+      "engagement_range": 1800,
+      "preferred_distance": 280,
+      "flee_hull_pct": 0.0,
+      "aim_jitter": 0.04,
+      "thrust_intensity": 1.0,
+      "patrol_radius": 1400
+    },
+    {
+      "id": "defender",
+      "engagement_range": 2200,
+      "preferred_distance": 420,
+      "flee_hull_pct": 0.10,
+      "aim_jitter": 0.05,
+      "thrust_intensity": 0.95,
+      "patrol_radius": 1800
+    },
+    {
+      "id": "coward",
+      "engagement_range": 700,
+      "preferred_distance": 900,
+      "flee_hull_pct": 0.60,
+      "aim_jitter": 0.18,
+      "thrust_intensity": 0.85,
+      "patrol_radius": 1000
+    },
+    {
+      "id": "civilian",
+      "engagement_range": 0,
+      "preferred_distance": 0,
+      "flee_hull_pct": 0.95,
+      "aim_jitter": 0.5,
+      "thrust_intensity": 0.55,
+      "patrol_radius": 2200
+    }
+  ]
+}

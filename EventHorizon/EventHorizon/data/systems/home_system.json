@@ -35,11 +35,10 @@
     "max_spin_period": 28.0
   },
   "fleets": [
-    {"name": "small_core_pirates",   "strength": 500},
-    {"name": "large_core_pirates",   "strength": 1400},
-    {"name": "large_syndicate",      "strength": 6000},
-    {"name": "korath_large_raid",    "strength": 60000},
-    {"name": "korath_miners",        "strength": 30000}
+    { "fleet": "civilian_traders", "spawns_per_minute": 1.5 },
+    { "fleet": "militia_patrol",   "spawns_per_minute": 1.0 },
+    { "fleet": "pirate_strike",    "spawns_per_minute": 0.6 },
+    { "fleet": "lone_ringship",    "spawns_per_minute": 1.0 }
   ],
   "trade": {
     "clothing":     364,

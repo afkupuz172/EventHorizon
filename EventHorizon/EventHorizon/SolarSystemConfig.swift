@@ -21,6 +21,11 @@ struct SolarSystemConfig: Decodable {
     let planets:   [PlanetConfig]
     let asteroids: AsteroidConfig
 
+    /// Optional NPC spawn table — each entry references a fleet template
+    /// (loaded by `FleetRegistry`) and how many fleets per minute roll a
+    /// spawn check in this system.
+    let fleets:    [SystemFleetRef]?
+
     static func load(name: String) -> SolarSystemConfig? {
         guard let url = Bundle.main.url(forResource: name, withExtension: "json")
         else {
@@ -110,6 +115,11 @@ struct PlanetConfig: Decodable {
     /// Services this planet offers in the docked view. Each string must be
     /// the raw value of a `PlanetService` case. Omit to grant all services.
     let services: [String]?
+}
+
+struct SystemFleetRef: Decodable {
+    let fleet: String
+    let spawnsPerMinute: Double
 }
 
 struct AsteroidConfig: Decodable {
